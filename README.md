@@ -29,6 +29,10 @@ DEBUG=false
 SHOW_THINKING_TOOL=force
 FEISHU_ACK_MODE=reaction
 FEISHU_ACK_REACTION=OK
+FEISHU_PROCESSING_REACTION=OK
+# 可选：留空表示不额外添加完成/失败 reaction
+FEISHU_DONE_REACTION=
+FEISHU_ERROR_REACTION=
 FEISHU_SEND_TIMEOUT_MS=15000
 ACP_PROMPT_TIMEOUT_MS=120000
 STATE_FILE=.data/state.json
@@ -61,11 +65,12 @@ kimi login
 
 ## Acknowledgement
 
-收到普通任务消息后，默认会给用户原消息加一个小 reaction，表示已进入处理队列：
+收到普通任务消息后，默认会给用户原消息加一个 reaction，表示已进入处理队列或正在处理：
 
 ```env
 FEISHU_ACK_MODE=reaction
 FEISHU_ACK_REACTION=OK
+FEISHU_PROCESSING_REACTION=OK
 ```
 
 可选值：
@@ -75,6 +80,8 @@ FEISHU_ACK_MODE=off      # 不提示
 FEISHU_ACK_MODE=reaction # 给原消息加 reaction
 FEISHU_ACK_MODE=message  # 发送一条“已收到”消息
 ```
+
+`FEISHU_PROCESSING_REACTION` 是任务进行中的 reaction，完成或失败后会自动移除。`FEISHU_DONE_REACTION` 和 `FEISHU_ERROR_REACTION` 可选；配置后会在任务成功或失败时追加对应 reaction。
 
 ## Agent Switching
 
@@ -107,6 +114,10 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 /project
 /project add acp /home/joknem/acp-create
 /project acp
+/bind
+/bind /home/joknem/acp-create
+/bind acp
+/unbind
 /help
 /status
 /cancel
@@ -118,6 +129,8 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 `/cwd` 会显示当前聊天的工作目录。`/cwd <absolute-path>` 会只切换当前飞书聊天的工作目录，并清空该聊天已有的 agent session；下一条普通消息会在新目录下创建 session。不同飞书聊天互不影响。如果当前聊天有任务正在运行，切换 cwd 会先请求取消当前任务。
 
 控制命令会立即执行，不会排在普通任务后面。普通消息会按当前聊天串行处理；如果前面有任务，会先进入队列，并通过 reaction 和短消息提示。
+
+群聊默认需要先绑定项目目录，未绑定时普通消息不会发送给 agent。私聊不需要绑定，继续使用当前聊天的 cwd。
 
 ## Personal Project Aliases
 
@@ -142,6 +155,21 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 
 如果省略路径，`/project add <name>` 会把当前聊天的 cwd 保存为该别名。项目别名是全局共享的；当前 agent 和 cwd 是按飞书聊天保存的。
 
+## Group Project Binding
+
+群聊可以绑定到一个项目目录，绑定后这个群就像一个固定的项目工作间：
+
+```text
+/bind /home/joknem/acp-create
+/bind acp
+/bind
+/unbind
+```
+
+`/bind <absolute-path>` 会把群聊绑定到指定目录。`/bind <project-name>` 会优先使用 `/project add` 保存的项目别名。`/bind` 会显示当前群聊绑定状态，`/unbind` 会移除绑定。
+
+在群聊中使用 `/cwd <path>` 或 `/project <name>` 时，也会同步更新群聊绑定。绑定信息和项目别名一样保存在 `.data/state.json`。
+
 状态默认保存在：
 
 ```text
@@ -158,7 +186,7 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 /status
 ```
 
-会显示当前忙闲状态、排队数量、当前 agent、cwd、agent 启动命令、ACK 模式、debug 配置、状态文件路径和项目别名数量。
+会显示当前忙闲状态、排队数量、聊天类型、群聊绑定、当前 agent、cwd、agent 启动命令、ACK 模式、debug 配置、状态文件路径、项目别名数量和群聊绑定数量。
 
 查看帮助：
 
@@ -227,6 +255,7 @@ npm test
 
 - 普通回复使用 `post` 原生富文本
 - 包含 fenced code block、Markdown 表格或很长输出时优先使用 interactive card
+- 超长 interactive card 会拆成多条编号 card 顺序发送，避免丢弃后半段内容
 - interactive card 发送失败时会自动回退到 `post`
 
 - 标题转为标题/加粗文本

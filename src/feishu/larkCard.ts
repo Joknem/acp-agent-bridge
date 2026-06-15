@@ -35,6 +35,10 @@ export function shouldUseLarkCard(markdown: string) {
 }
 
 export function markdownToLarkCard(markdown: string, fallbackTitle = "Agent 回复"): LarkCardContent {
+  return markdownToLarkCards(markdown, fallbackTitle)[0] ?? buildCard(fallbackTitle, [emptyResponseElement()]);
+}
+
+export function markdownToLarkCards(markdown: string, fallbackTitle = "Agent 回复"): LarkCardContent[] {
   const tokens = Lexer.lex(markdown, { gfm: true, breaks: false });
   const elements: LarkCardElement[] = [];
   const markdownBlocks: string[] = [];
@@ -79,12 +83,11 @@ export function markdownToLarkCard(markdown: string, fallbackTitle = "Agent 回�
     appendMarkdownElements(elements, "(empty response)");
   }
 
-  if (elements.length > MAX_ELEMENTS) {
-    elements.splice(MAX_ELEMENTS);
-    appendSeparator(elements);
-    appendDiv(elements, "lark_md", "_输出过长，后续内容已截断。_");
-  }
+  const chunks = chunkCardElements(elements);
+  return chunks.map((chunk, index) => buildCard(formatCardTitle(title, index, chunks.length), chunk));
+}
 
+function buildCard(title: string, elements: LarkCardElement[]): LarkCardContent {
   return {
     config: {
       wide_screen_mode: true,
@@ -98,6 +101,47 @@ export function markdownToLarkCard(markdown: string, fallbackTitle = "Agent 回�
     },
     elements,
   };
+}
+
+function chunkCardElements(elements: LarkCardElement[]) {
+  const chunks: LarkCardElement[][] = [];
+  let current: LarkCardElement[] = [];
+
+  const flush = () => {
+    while (current.at(-1)?.tag === "hr") {
+      current.pop();
+    }
+
+    if (current.length) {
+      chunks.push(current);
+      current = [];
+    }
+  };
+
+  for (const element of elements) {
+    if (element.tag === "hr" && !current.length) continue;
+
+    if (current.length >= MAX_ELEMENTS || (current.length === MAX_ELEMENTS - 1 && element.tag === "hr")) {
+      flush();
+      if (element.tag === "hr") continue;
+    }
+
+    current.push(element);
+  }
+
+  flush();
+  return chunks.length ? chunks : [[emptyResponseElement()]];
+}
+
+function emptyResponseElement(): LarkCardElement {
+  return { tag: "div", text: { tag: "lark_md", content: "(empty response)" } };
+}
+
+function formatCardTitle(title: string, index: number, total: number) {
+  if (total <= 1) return title.slice(0, MAX_TITLE_LENGTH);
+
+  const suffix = ` (${index + 1}/${total})`;
+  return `${title.slice(0, MAX_TITLE_LENGTH - suffix.length)}${suffix}`;
 }
 
 function appendMarkdownElements(elements: LarkCardElement[], markdown: string) {

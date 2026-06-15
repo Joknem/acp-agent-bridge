@@ -3,6 +3,13 @@ import path from "node:path";
 import { z } from "zod";
 import type { Logger } from "../logger.js";
 
+const bindingSchema = z.object({
+  cwd: z.string().min(1),
+  projectName: z.string().min(1).optional(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
 const stateSchema = z.object({
   version: z.literal(1),
   chats: z.record(
@@ -13,6 +20,7 @@ const stateSchema = z.object({
     }),
   ),
   projects: z.record(z.string(), z.string().min(1)),
+  bindings: z.record(z.string(), bindingSchema).default({}),
 });
 
 export type PersistedState = z.infer<typeof stateSchema>;
@@ -22,6 +30,7 @@ export class StateStore {
     version: 1,
     chats: {},
     projects: {},
+    bindings: {},
   };
   private writeQueue: Promise<void> = Promise.resolve();
 
@@ -44,6 +53,7 @@ export class StateStore {
         filePath: this.filePath,
         chats: Object.keys(this.state.chats).length,
         projects: Object.keys(this.state.projects).length,
+        bindings: Object.keys(this.state.bindings).length,
       });
     } catch (error: unknown) {
       if (isNotFound(error)) {
@@ -88,6 +98,35 @@ export class StateStore {
     delete this.state.projects[normalized];
     if (existed) void this.save();
     return existed;
+  }
+
+  getBinding(chatId: string) {
+    return this.state.bindings[chatId];
+  }
+
+  setBinding(chatId: string, value: { cwd: string; projectName?: string }) {
+    const now = Date.now();
+    const previous = this.state.bindings[chatId];
+    this.state.bindings[chatId] = {
+      cwd: value.cwd,
+      projectName: value.projectName,
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: now,
+    };
+    void this.save();
+  }
+
+  deleteBinding(chatId: string) {
+    const existed = chatId in this.state.bindings;
+    delete this.state.bindings[chatId];
+    if (existed) void this.save();
+    return existed;
+  }
+
+  listBindings() {
+    return Object.entries(this.state.bindings)
+      .map(([chatId, binding]) => ({ chatId, ...binding }))
+      .sort((a, b) => a.chatId.localeCompare(b.chatId));
   }
 
   async flush() {

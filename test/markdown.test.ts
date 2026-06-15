@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { markdownToLarkCard, shouldUseLarkCard } from "../src/feishu/larkCard.js";
+import { markdownToLarkCard, markdownToLarkCards, shouldUseLarkCard } from "../src/feishu/larkCard.js";
 import { markdownToLarkPost } from "../src/markdown/larkPost.js";
 
 const post = markdownToLarkPost(`# 标题
@@ -47,5 +47,24 @@ assert(card.elements.some((item) => item.tag === "div" && item.text.content.incl
 assert(card.elements.some((item) => item.tag === "div" && item.text.tag === "lark_md" && item.text.content.includes("代码块 (ts)")));
 assert(card.elements.some((item) => item.tag === "div" && item.text.tag === "plain_text" && item.text.content.includes("const x = 1;")));
 assert(!card.elements.some((item) => item.tag === "div" && item.text.content.includes("```ts")));
+
+const longCode = Array.from(
+  { length: 1500 },
+  (_, index) => `line ${index.toString().padStart(4, "0")} ${"x".repeat(50)}`,
+).join("\n");
+const cards = markdownToLarkCards(["# 长回复", "", "```txt", longCode, "```"].join("\n"));
+const cardText = cards
+  .flatMap((item) => item.elements)
+  .filter((item) => item.tag === "div")
+  .map((item) => item.text.content)
+  .join("\n");
+
+assert(cards.length > 1);
+assert(cards.every((item) => item.elements.length <= 20));
+assert(cards[0]?.header.title.content.endsWith(`(1/${cards.length})`));
+assert(cards.at(-1)?.header.title.content.endsWith(`(${cards.length}/${cards.length})`));
+assert(!cardText.includes("截断"));
+assert(cardText.includes("line 0000"));
+assert(cardText.includes("line 1499"));
 
 console.log("markdown conversion tests passed");
