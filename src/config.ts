@@ -28,7 +28,7 @@ const envSchema = z.object({
     .transform((value) => value.toLowerCase() === "true"),
   FEISHU_ACK_MODE: z.enum(["off", "reaction", "message"]).optional(),
   FEISHU_ACK_REACTION: z.string().min(1).default("OK"),
-  FEISHU_PROCESSING_REACTION: z.string().min(1).default("Thinking"),
+  FEISHU_PROCESSING_REACTION: z.string().min(1).default("THINKING"),
   FEISHU_DONE_REACTION: z.string().optional().default(""),
   FEISHU_ERROR_REACTION: z.string().optional().default(""),
   FEISHU_SEND_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
@@ -74,14 +74,19 @@ export function loadConfig() {
     debug: parsed.data.DEBUG,
     showThinkingTool: parsed.data.SHOW_THINKING_TOOL,
     ackMode: parsed.data.FEISHU_ACK_MODE ?? (parsed.data.FEISHU_ACK_ON_RECEIVE ? "message" : "off"),
-    ackReaction: parsed.data.FEISHU_ACK_REACTION,
-    processingReaction: parsed.data.FEISHU_PROCESSING_REACTION,
-    doneReaction: parsed.data.FEISHU_DONE_REACTION || undefined,
-    errorReaction: parsed.data.FEISHU_ERROR_REACTION || undefined,
+    ackReaction: normalizeReactionType(parsed.data.FEISHU_ACK_REACTION) ?? "OK",
+    processingReaction: normalizeReactionType(parsed.data.FEISHU_PROCESSING_REACTION) ?? "THINKING",
+    doneReaction: normalizeReactionType(parsed.data.FEISHU_DONE_REACTION),
+    errorReaction: normalizeReactionType(parsed.data.FEISHU_ERROR_REACTION),
     sendTimeoutMs: parsed.data.FEISHU_SEND_TIMEOUT_MS,
     stateFile: path.resolve(parsed.data.STATE_FILE),
     logLevel: parsed.data.LOG_LEVEL,
   };
+}
+
+function normalizeReactionType(value: string | undefined) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.toUpperCase() : undefined;
 }
 
 function parseAgentProviders(env: NodeJS.ProcessEnv, legacyKimiPath: string) {

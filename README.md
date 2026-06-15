@@ -29,7 +29,7 @@ DEBUG=false
 SHOW_THINKING_TOOL=force
 FEISHU_ACK_MODE=reaction
 FEISHU_ACK_REACTION=OK
-FEISHU_PROCESSING_REACTION=Thinking
+FEISHU_PROCESSING_REACTION=THINKING
 # 可选：留空表示不额外添加完成/失败 reaction
 FEISHU_DONE_REACTION=
 FEISHU_ERROR_REACTION=
@@ -70,7 +70,7 @@ kimi login
 ```env
 FEISHU_ACK_MODE=reaction
 FEISHU_ACK_REACTION=OK
-FEISHU_PROCESSING_REACTION=Thinking
+FEISHU_PROCESSING_REACTION=THINKING
 ```
 
 可选值：
@@ -81,7 +81,7 @@ FEISHU_ACK_MODE=reaction # 给原消息加 reaction
 FEISHU_ACK_MODE=message  # 发送一条“已收到”消息
 ```
 
-`FEISHU_PROCESSING_REACTION` 是任务进行中的 reaction，默认使用 `Thinking`，完成或失败后会自动移除。`FEISHU_DONE_REACTION` 和 `FEISHU_ERROR_REACTION` 可选；配置后会在任务成功或失败时追加对应 reaction。
+`FEISHU_PROCESSING_REACTION` 是任务进行中的 reaction，默认使用 `THINKING`，完成或失败后会自动移除。飞书 reaction 的 `emoji_type` 使用全大写值，例如 `OK`、`THINKING`、`DONE`；程序会自动 trim 并转成大写。`FEISHU_DONE_REACTION` 和 `FEISHU_ERROR_REACTION` 可选；配置后会在任务成功或失败时追加对应 reaction。
 
 ## Agent Switching
 
