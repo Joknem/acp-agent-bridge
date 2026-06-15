@@ -32,6 +32,18 @@ assert(flat.some((item) => item.tag === "text" && item.text.includes("相对链�
 assert(flat.some((item) => item.tag === "code_block" && item.language === "text" && item.text.includes("| 名称")));
 assert(flat.some((item) => item.tag === "code_block" && item.language === "ts" && item.text.includes("const x = 1;")));
 
+const skillPost = markdownToLarkPost(`你当前可用的 skills 有：
+
+- \`imagegen\`: 生成或编辑位图图片、插画、纹理。
+- \`openai-docs\`: 查询和引用 OpenAI / Codex 官方文档。
+`);
+const skillRows = skillPost.zh_cn.content.map((row) => row.map((item) => item.text).join(""));
+
+assert.equal(skillRows.filter((row) => row.includes("imagegen")).length, 1);
+assert.equal(skillRows.filter((row) => row.includes("openai-docs")).length, 1);
+assert(skillRows.some((row) => row.startsWith("- ") && row.includes("imagegen")));
+assert(skillRows.some((row) => row.startsWith("- ") && row.includes("openai-docs")));
+
 const card = markdownToLarkCard(`# 卡片标题
 
 看 [相对链接](README.md)。

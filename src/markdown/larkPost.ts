@@ -142,17 +142,30 @@ function appendListItem(
   const checkbox = item.task ? `[${item.checked ? "x" : " "}] ` : "";
   const indent = BULLET_INDENTS[Math.min(depth, BULLET_INDENTS.length - 1)] ?? "";
 
-  const firstParagraph = item.tokens[0]?.type === "paragraph" ? (item.tokens[0] as Tokens.Paragraph) : undefined;
-  const nestedTokens = item.tokens.slice(firstParagraph ? 1 : 0);
-  const row = firstParagraph
-    ? inlineToElements(firstParagraph.tokens, {})
-    : [{ tag: "text" as const, text: item.text.split("\n")[0] ?? "" }];
+  const firstContentIndex = item.tokens.findIndex((token) => token.type !== "space");
+  const firstContentToken = firstContentIndex >= 0 ? item.tokens[firstContentIndex] : undefined;
+  const nestedTokens = firstContentIndex >= 0 ? item.tokens.slice(firstContentIndex + 1) : [];
+  const row = listItemRow(firstContentToken, item);
 
   rows.push([{ tag: "text", text: `${indent}${marker}${checkbox}` }, ...row]);
 
   for (const nested of nestedTokens) {
+    if (nested.type === "space") continue;
     appendBlock(rows, nested, depth + 1);
   }
+}
+
+function listItemRow(firstToken: Token | undefined, item: Tokens.ListItem): LarkPostElement[] {
+  if (firstToken?.type === "paragraph") {
+    return inlineToElements((firstToken as Tokens.Paragraph).tokens, {});
+  }
+
+  if (firstToken?.type === "text") {
+    const text = firstToken as Tokens.Text;
+    return inlineToElements(text.tokens ?? [text], {});
+  }
+
+  return [{ tag: "text", text: item.text.split("\n")[0] ?? "" }];
 }
 
 function appendTable(rows: LarkPostElement[][], table: Tokens.Table) {
