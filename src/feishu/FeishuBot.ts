@@ -150,12 +150,16 @@ export class FeishuBot {
       return;
     }
 
+    const provider = this.agentManager.currentProvider(message.chat_id);
+    const ackState = await this.acknowledge(message.chat_id, message.message_id, provider);
+
     if (await this.maybeHandleUnboundGroupMessage(message.chat_id, message.chat_type)) {
+      await this.finishAcknowledgement(ackState, "cancelled");
       return;
     }
 
     const state = this.getChatState(message.chat_id);
-    const ackState = await this.maybeAcknowledgeQueuedMessage(message.chat_id, message.message_id, text, state);
+    await this.maybeNotifyQueuedMessage(message.chat_id, text, state);
     state.queuedCount += 1;
     state.queue = state.queue
       .catch(() => undefined)
@@ -920,11 +924,8 @@ export class FeishuBot {
     }
   }
 
-  private async maybeAcknowledgeQueuedMessage(chatId: string, messageId: string, text: string, state: ChatState) {
-    if (!state.activeTurn && state.queuedCount === 0) return undefined;
-
-    const provider = this.agentManager.currentProvider(chatId);
-    const ackState = await this.acknowledge(chatId, messageId, provider);
+  private async maybeNotifyQueuedMessage(chatId: string, text: string, state: ChatState) {
+    if (!state.activeTurn && state.queuedCount === 0) return;
 
     const now = Date.now();
     if (!state.lastQueueNoticeAt || now - state.lastQueueNoticeAt >= QUEUE_NOTICE_COOLDOWN_MS) {
@@ -936,8 +937,6 @@ export class FeishuBot {
         "已加入队列",
       );
     }
-
-    return ackState;
   }
 
   private markActiveTurnSuppressed(chatId: string) {
