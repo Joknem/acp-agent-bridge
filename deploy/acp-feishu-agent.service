@@ -1,0 +1,22 @@
+[Unit]
+Description=ACP Feishu Agent Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/joknem/acp-create
+ExecStart=/usr/bin/node /home/joknem/acp-create/dist/src/index.js
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PATH=/home/joknem/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=HTTP_PROXY=http://127.0.0.1:7890
+Environment=HTTPS_PROXY=http://127.0.0.1:7890
+Environment=http_proxy=http://127.0.0.1:7890
+Environment=https_proxy=http://127.0.0.1:7890
+Environment=NO_PROXY=localhost,127.0.0.1,::1
+Environment=no_proxy=localhost,127.0.0.1,::1
+
+[Install]
+WantedBy=default.target

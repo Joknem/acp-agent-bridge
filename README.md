@@ -1,0 +1,239 @@
+# ACP Feishu Agent Bridge
+
+基于 ACP 协议把编程智能体接入飞书机器人。服务通过飞书长连接接收文本消息，为每个飞书聊天维护当前 agent 和 ACP 会话，并把 agent 的 Markdown 输出转换为飞书 `post` 富文本消息发送回聊天。
+
+## Setup
+
+```bash
+npm install
+cp .env.example .env
+```
+
+填写 `.env`：
+
+```env
+FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
+FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ACP_DEFAULT_CWD=/Users/yourname/projects
+
+AGENT_DEFAULT=kimi
+KIMI_PATH=kimi
+AGENT_KIMI_COMMAND=kimi
+AGENT_KIMI_ARGS=acp
+
+# Codex CLI 通过 Zed 的 ACP adapter 接入，默认 gpt-5.5 + high reasoning
+AGENT_CODEX_COMMAND=npx
+AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_reasoning_effort="high"'
+
+DEBUG=false
+SHOW_THINKING_TOOL=force
+FEISHU_ACK_MODE=reaction
+FEISHU_ACK_REACTION=OK
+FEISHU_SEND_TIMEOUT_MS=15000
+ACP_PROMPT_TIMEOUT_MS=120000
+STATE_FILE=.data/state.json
+```
+
+程序会优先读取项目根目录的 `.env`，并覆盖 shell 中已有的同名环境变量，避免误连到旧的飞书应用。
+
+如果 `npm run dev` 报 `spawn kimi ENOENT`，说明当前进程找不到 `kimi` 可执行文件。先运行：
+
+```bash
+command -v kimi
+```
+
+然后把输出写入 `.env`，例如：
+
+```env
+KIMI_PATH=/home/joknem/.kimi-code/bin/kimi
+AGENT_KIMI_COMMAND=/home/joknem/.kimi-code/bin/kimi
+```
+
+`ACP_DEFAULT_CWD` 也必须是当前机器上真实存在的目录。
+
+Kimi CLI 需要已登录：
+
+```bash
+kimi login
+```
+
+飞书应用需要开启机器人能力、长连接，并订阅 `im.message.receive_v1` 事件。
+
+## Acknowledgement
+
+收到普通任务消息后，默认会给用户原消息加一个小 reaction，表示已进入处理队列：
+
+```env
+FEISHU_ACK_MODE=reaction
+FEISHU_ACK_REACTION=OK
+```
+
+可选值：
+
+```env
+FEISHU_ACK_MODE=off      # 不提示
+FEISHU_ACK_MODE=reaction # 给原消息加 reaction
+FEISHU_ACK_MODE=message  # 发送一条“已收到”消息
+```
+
+## Agent Switching
+
+配置格式：
+
+```env
+AGENT_DEFAULT=kimi
+AGENT_<NAME>_COMMAND=<executable>
+AGENT_<NAME>_ARGS=<space separated args>
+```
+
+示例：
+
+```env
+AGENT_KIMI_COMMAND=/home/joknem/.kimi-code/bin/kimi
+AGENT_KIMI_ARGS=acp
+
+AGENT_CODEX_COMMAND=npx
+AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_reasoning_effort="high"'
+```
+
+飞书里发送：
+
+```text
+/agent
+/agent kimi
+/agent codex
+/cwd
+/cwd /home/joknem/acp-create
+/project
+/project add acp /home/joknem/acp-create
+/project acp
+/help
+/status
+/cancel
+/reset
+```
+
+`/agent` 会显示当前聊天使用的 agent 和所有可用 agent。每个飞书聊天可以独立切换；切换时会为目标 agent 创建新的 ACP session。如果当前聊天有任务正在运行，切换 agent 会先请求取消当前任务。
+
+`/cwd` 会显示当前聊天的工作目录。`/cwd <absolute-path>` 会只切换当前飞书聊天的工作目录，并清空该聊天已有的 agent session；下一条普通消息会在新目录下创建 session。不同飞书聊天互不影响。如果当前聊天有任务正在运行，切换 cwd 会先请求取消当前任务。
+
+控制命令会立即执行，不会排在普通任务后面。普通消息会按当前聊天串行处理；如果前面有任务，会先进入队列，并通过 reaction 和短消息提示。
+
+## Personal Project Aliases
+
+单人使用时，建议用一个单聊或私有群，通过项目别名切换工作目录：
+
+```text
+/project add acp /home/joknem/acp-create
+/project add blog /home/joknem/blog
+/project
+/project acp
+```
+
+命令：
+
+```text
+/project
+/project list
+/project add <name> [absolute-path]
+/project remove <name>
+/project <name>
+```
+
+如果省略路径，`/project add <name>` 会把当前聊天的 cwd 保存为该别名。项目别名是全局共享的；当前 agent 和 cwd 是按飞书聊天保存的。
+
+状态默认保存在：
+
+```text
+.data/state.json
+```
+
+这个文件不会提交到 git。服务重启后会恢复每个聊天的当前 agent/cwd 和项目别名。
+
+## Status
+
+查看当前聊天配置：
+
+```text
+/status
+```
+
+会显示当前忙闲状态、排队数量、当前 agent、cwd、agent 启动命令、ACK 模式、debug 配置、状态文件路径和项目别名数量。
+
+查看帮助：
+
+```text
+/help
+```
+
+## Runtime Controls
+
+```text
+/cancel
+/reset
+```
+
+`/cancel` 会立即向当前聊天正在使用的 ACP session 发送 `session/cancel`，不排队等待当前任务结束。`/reset` 会取消并丢弃当前聊天的 agent session，下一条普通消息会重新创建 session。
+
+## Skills
+
+如果要给个人工作流加 skills，建议先放在仓库内：
+
+```text
+skills/
+  code-review.md
+  release-checklist.md
+  feishu-bot-debug.md
+```
+
+每个 skill 用一个 Markdown 文件，内容建议包含：
+
+```text
+# Skill Name
+
+## When to use
+什么时候使用这个 skill。
+
+## Instructions
+具体执行规则。
+
+## Inputs
+需要用户提供什么。
+
+## Output
+期望输出格式。
+```
+
+为什么放这里：
+
+- 跟这个飞书 agent hub 绑定，容易备份和迁移
+- 可以按项目提交一套常用工作流
+- 以后可以自然扩展 `/skill list`、`/skill use <name>`，把 skill 文本注入给当前 agent
+
+暂时不建议直接混进 `.data/`。`.data/` 更适合运行状态；skills 是可维护资产，应该放在可读、可版本管理的位置。
+
+## Commands
+
+```bash
+npm run dev
+npm run build
+npm start
+npm test
+```
+
+## Markdown Rendering
+
+转换层会把常见 Markdown 转为飞书消息：
+
+- 普通回复使用 `post` 原生富文本
+- 包含 fenced code block、Markdown 表格或很长输出时优先使用 interactive card
+- interactive card 发送失败时会自动回退到 `post`
+
+- 标题转为标题/加粗文本
+- 粗体、斜体、删除线、行内代码转为 `text.style`
+- 链接转为 `a`
+- 有序/无序列表转为带缩进的文本行
+- 表格转为等宽 `code_block`
+- fenced code block 转为 `code_block`
+
+`DEBUG=true` 且 `SHOW_THINKING_TOOL` 为 `summary` 或 `detailed` 时，会额外发送 thinking/tool-call 调试消息。
