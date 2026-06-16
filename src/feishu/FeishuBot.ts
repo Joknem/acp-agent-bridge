@@ -1164,6 +1164,17 @@ function errorMessage(error: unknown) {
 function permissionSuggestion(message: string) {
   const normalized = message.toLowerCase();
 
+  if (normalized.includes("acp prompt timeout")) {
+    return [
+      "agent 在超时时间内没有结束，本次会话 session 已自动丢弃；下一条消息会创建新 session。",
+      "可以先试：",
+      "- 发 `/status` 看当前 agent、cwd 和队列",
+      "- 发 `/agent kimi` 或 `/agent codex` 切换 agent",
+      "- 把任务拆小一点再发",
+      "- 如需更长等待时间，调整 `.env` 里的 `ACP_PROMPT_TIMEOUT_MS`",
+    ].join("\n");
+  }
+
   if (normalized.includes("outside current chat cwd")) {
     return [
       "这是工作目录边界限制，不是飞书授权问题。",

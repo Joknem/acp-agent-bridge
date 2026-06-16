@@ -82,7 +82,19 @@ export class AgentManager {
       state.sessions.set(state.providerName, session);
     }
 
-    return client.prompt(session, prompt);
+    try {
+      return await client.prompt(session, prompt);
+    } catch (error: unknown) {
+      state.sessions.delete(state.providerName);
+      this.logger.warn("cleared chat agent session after prompt failure", {
+        chatId,
+        provider: state.providerName,
+        cwd: state.cwd,
+        sessionId: session.sessionId,
+        message: errorMessage(error),
+      });
+      throw error;
+    }
   }
 
   async cancel(chatId: string) {
@@ -163,4 +175,8 @@ export class AgentManager {
 
     return this.config.acp.defaultAgent;
   }
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
