@@ -2,7 +2,7 @@ import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
 import { AcpAgentClient } from "./AcpAgentClient.js";
-import type { AcpAgentProvider, AgentSession, AgentTurn } from "./types.js";
+import type { AcpAgentProvider, AgentPromptContent, AgentSession, AgentTurn } from "./types.js";
 
 type ChatAgentState = {
   providerName: string;
@@ -72,7 +72,7 @@ export class AgentManager {
     return normalized;
   }
 
-  async prompt(chatId: string, text: string): Promise<AgentTurn> {
+  async prompt(chatId: string, prompt: AgentPromptContent): Promise<AgentTurn> {
     const state = this.getChatState(chatId);
     const client = this.getClient(state.providerName);
     let session = state.sessions.get(state.providerName);
@@ -82,7 +82,7 @@ export class AgentManager {
       state.sessions.set(state.providerName, session);
     }
 
-    return client.prompt(session, text);
+    return client.prompt(session, prompt);
   }
 
   async cancel(chatId: string) {

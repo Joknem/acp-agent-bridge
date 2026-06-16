@@ -1,16 +1,18 @@
 import * as lark from "@larksuiteoapi/node-sdk";
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { Readable } from "node:stream";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import { markdownToLarkCards, shouldUseLarkCard, type LarkCardContent } from "./larkCard.js";
 import { markdownToLarkPost, type LarkPostContent } from "../markdown/larkPost.js";
+import { parseIncomingFeishuMessage, type IncomingFeishuMessage } from "./incomingMessage.js";
 import type { StateStore } from "../state/StateStore.js";
 import { normalizeProjectName } from "../state/StateStore.js";
-import { extractJsonText, truncate } from "../utils/text.js";
+import { truncate } from "../utils/text.js";
 import type { AgentManager } from "../acp/AgentManager.js";
 import { AgentPromptError } from "../acp/types.js";
-import type { AgentTurn } from "../acp/types.js";
+import type { AgentPromptContent, AgentTurn } from "../acp/types.js";
 
 type ReceiveMessageEvent = NonNullable<lark.EventHandles["im.message.receive_v1"]> extends (data: infer T) => unknown
   ? T
@@ -129,29 +131,35 @@ export class FeishuBot {
       mentionCount: message.mentions?.length ?? 0,
     });
 
-    if (message.message_type !== "text") {
+    const incoming = parseIncomingFeishuMessage({
+      messageType: message.message_type,
+      content: message.content,
+      mentions: message.mentions,
+    });
+
+    if (!incoming) {
       this.logger.info("ignored unsupported feishu message", {
         messageId: message.message_id,
         messageType: message.message_type,
       });
-      await this.sendMarkdown(message.chat_id, `暂只支持文本消息，收到的是：\`${message.message_type}\``);
+      await this.sendMarkdown(message.chat_id, `暂只支持文本和图片消息，收到的是：\`${message.message_type}\``);
       return;
     }
 
-    const text = stripMentionTokens(extractJsonText(message.content), message.mentions).trim();
-    this.logger.info("parsed feishu text", {
+    this.logger.info("parsed feishu message", {
       messageId: message.message_id,
       chatId: message.chat_id,
-      text: truncate(text, 120),
+      kind: incoming.kind,
+      text: truncate(incoming.summary, 120),
     });
 
-    if (!text) {
+    if (incoming.kind === "text" && !incoming.text) {
       await this.sendMarkdown(message.chat_id, "我收到了 @，但没有看到具体指令。可以直接发送问题，或发送 `/agent` 查看 agent。");
       return;
     }
 
-    if (isImmediateCommand(text)) {
-      await this.processText(message.chat_id, message.message_id, text, { chatType: message.chat_type });
+    if (incoming.kind === "text" && isImmediateCommand(incoming.text)) {
+      await this.processIncoming(message.chat_id, message.message_id, incoming, { chatType: message.chat_type });
       return;
     }
 
@@ -164,17 +172,23 @@ export class FeishuBot {
     }
 
     const state = this.getChatState(message.chat_id);
-    await this.maybeNotifyQueuedMessage(message.chat_id, text, state);
+    await this.maybeNotifyQueuedMessage(message.chat_id, incoming.summary, state);
     state.queuedCount += 1;
     state.queue = state.queue
       .catch(() => undefined)
       .then(async () => {
         state.queuedCount = Math.max(0, state.queuedCount - 1);
-        await this.processText(message.chat_id, message.message_id, text, { ackState, chatType: message.chat_type });
+        await this.processIncoming(message.chat_id, message.message_id, incoming, { ackState, chatType: message.chat_type });
       });
   }
 
-  private async processText(chatId: string, messageId: string, text: string, options: ProcessTextOptions = {}) {
+  private async processIncoming(
+    chatId: string,
+    messageId: string,
+    incoming: IncomingFeishuMessage,
+    options: ProcessTextOptions = {},
+  ) {
+    const text = incoming.text;
     try {
       if (isHelpCommand(text)) {
         await this.handleHelpCommand(chatId);
@@ -246,14 +260,14 @@ export class FeishuBot {
 
       const provider = this.agentManager.currentProvider(chatId);
       const cwd = this.agentManager.currentCwd(chatId);
-      this.logger.info("prompting acp agent", { chatId, provider, cwd, text: truncate(text, 120) });
+      this.logger.info("prompting acp agent", { chatId, provider, cwd, text: truncate(incoming.summary, 120) });
 
       const state = this.getChatState(chatId);
       const activeTurn: ActiveTurn = {
         messageId,
         provider,
         cwd,
-        text,
+        text: incoming.summary,
         startedAt: Date.now(),
       };
       state.activeTurn = activeTurn;
@@ -261,7 +275,8 @@ export class FeishuBot {
       try {
         ackState ??= await this.acknowledge(chatId, messageId, provider);
 
-        const turn = await this.agentManager.prompt(chatId, text);
+        const prompt = await this.buildAgentPrompt(messageId, incoming);
+        const turn = await this.agentManager.prompt(chatId, prompt);
         await this.sendTurn(chatId, turn);
         await this.finishAcknowledgement(ackState, "success");
       } catch (error: unknown) {
@@ -271,7 +286,7 @@ export class FeishuBot {
             chatId,
             provider,
             message: errorMessage(error),
-            text: truncate(text, 120),
+            text: truncate(incoming.summary, 120),
           });
           return;
         }
@@ -768,6 +783,44 @@ export class FeishuBot {
     await this.sendMarkdown(chatId, answer, `${turn.provider} 回复`);
   }
 
+  private async buildAgentPrompt(messageId: string, incoming: IncomingFeishuMessage): Promise<AgentPromptContent> {
+    if (incoming.kind === "text") {
+      return [{ type: "text", text: incoming.text }];
+    }
+
+    const image = await this.downloadMessageImage(messageId, incoming.imageKey);
+    return [{ type: "text", text: incoming.text }, image];
+  }
+
+  private async downloadMessageImage(messageId: string, imageKey: string): Promise<AgentPromptContent[number]> {
+    const resource = await this.withSendTimeout(
+      this.client.im.messageResource.get({
+        path: {
+          message_id: messageId,
+          file_key: imageKey,
+        },
+        params: {
+          type: "image",
+        },
+      }),
+    );
+    const buffer = await this.withSendTimeout(readStreamToBuffer(resource.getReadableStream(), this.config.imageMaxBytes));
+    const mimeType = inferImageMimeType(resource.headers?.["content-type"], buffer);
+
+    this.logger.info("downloaded feishu image", {
+      messageId,
+      imageKey,
+      bytes: buffer.byteLength,
+      mimeType,
+    });
+
+    return {
+      type: "image",
+      data: buffer.toString("base64"),
+      mimeType,
+    };
+  }
+
   private async sendMarkdown(chatId: string, markdown: string, title?: string) {
     if (shouldUseLarkCard(markdown)) {
       try {
@@ -1216,16 +1269,6 @@ function isGroupChat(chatType?: string) {
   return chatType === "group";
 }
 
-function stripMentionTokens(text: string, mentions: ReceiveMessageEvent["message"]["mentions"]) {
-  let stripped = text;
-  for (const mention of mentions ?? []) {
-    stripped = stripped.replaceAll(mention.key, "");
-    stripped = stripped.replaceAll(`@${mention.name}`, "");
-  }
-
-  return stripped;
-}
-
 function maskAppId(appId: string) {
   if (appId.length <= 8) return appId;
   return `${appId.slice(0, 7)}...${appId.slice(-4)}`;
@@ -1242,6 +1285,45 @@ async function assertDirectory(target: string) {
   if (!stat.isDirectory()) {
     throw new Error(`不是目录：${target}`);
   }
+}
+
+async function readStreamToBuffer(stream: Readable, maxBytes: number) {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.byteLength;
+    if (totalBytes > maxBytes) {
+      stream.destroy();
+      throw new Error(`图片过大：最大支持 ${formatBytes(maxBytes)}`);
+    }
+
+    chunks.push(buffer);
+  }
+
+  return Buffer.concat(chunks);
+}
+
+function inferImageMimeType(header: unknown, buffer: Buffer) {
+  const contentType = Array.isArray(header) ? header[0] : header;
+  if (typeof contentType === "string") {
+    const mimeType = contentType.split(";")[0]?.trim().toLowerCase();
+    if (mimeType?.startsWith("image/")) return mimeType;
+  }
+
+  if (buffer.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return "image/jpeg";
+  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
+  if (buffer.subarray(0, 6).toString("ascii") === "GIF87a" || buffer.subarray(0, 6).toString("ascii") === "GIF89a") return "image/gif";
+  if (buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+
+  return "image/jpeg";
+}
+
+function formatBytes(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${Math.floor(bytes / 1024 / 1024)}MB`;
+  if (bytes >= 1024) return `${Math.floor(bytes / 1024)}KB`;
+  return `${bytes}B`;
 }
 
 function resolveNewProjectCwd(defaultRoot: string, projectName: string, rawCwd?: string) {

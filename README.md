@@ -34,6 +34,7 @@ FEISHU_PROCESSING_REACTION=THINKING
 FEISHU_DONE_REACTION=
 FEISHU_ERROR_REACTION=
 FEISHU_SEND_TIMEOUT_MS=15000
+FEISHU_IMAGE_MAX_BYTES=10485760
 ACP_PROMPT_TIMEOUT_MS=120000
 STATE_FILE=.data/state.json
 ```
@@ -62,6 +63,8 @@ kimi login
 ```
 
 飞书应用需要开启机器人能力、长连接，并订阅 `im.message.receive_v1` 事件。
+
+图片消息会通过飞书的消息资源接口下载后转发给 ACP agent。默认最大图片大小是 10MB，可通过 `FEISHU_IMAGE_MAX_BYTES` 调整；当前只支持飞书 `image` 消息，不支持表情包、文件附件或合并转发里的子消息资源。
 
 ## Acknowledgement
 

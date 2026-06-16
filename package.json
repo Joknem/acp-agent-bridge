@@ -7,7 +7,7 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/src/index.js",
-    "test": "tsx test/markdown.test.ts && tsx test/stateStore.test.ts",
+    "test": "tsx test/markdown.test.ts && tsx test/stateStore.test.ts && tsx test/feishuIncomingMessage.test.ts",
     "check": "npm run build && npm test"
   },
   "keywords": [],

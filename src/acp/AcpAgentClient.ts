@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import * as acp from "@agentclientprotocol/sdk";
 import type {
+  AgentCapabilities,
   ContentBlock,
   ReadTextFileRequest,
   RequestPermissionRequest,
@@ -15,7 +16,7 @@ import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import { resolveInsideRoot } from "../utils/pathSafety.js";
 import { truncate } from "../utils/text.js";
-import { AgentPromptError, type AcpAgentProvider, type AgentSession, type AgentTurn } from "./types.js";
+import { AgentPromptError, type AcpAgentProvider, type AgentPromptContent, type AgentSession, type AgentTurn } from "./types.js";
 
 type TurnBuffer = {
   answer: string[];
@@ -31,6 +32,7 @@ export class AcpAgentClient {
   private sessionCwds = new Map<string, string>();
   private stderrTail: string[] = [];
   private initPromise?: Promise<void>;
+  private agentCapabilities?: AgentCapabilities;
 
   constructor(
     private readonly config: AppConfig,
@@ -56,12 +58,14 @@ export class AcpAgentClient {
     return { sessionId: session.sessionId, cwd };
   }
 
-  async prompt(session: AgentSession, text: string): Promise<AgentTurn> {
+  async prompt(session: AgentSession, prompt: AgentPromptContent): Promise<AgentTurn> {
     await this.start();
     const connection = this.requireConnection();
+    this.assertPromptSupported(prompt);
     const buffer: TurnBuffer = { answer: [], thought: [], tools: [] };
     this.activeTurns.set(session.sessionId, buffer);
     const startedAt = Date.now();
+    const promptSummary = summarizePrompt(prompt);
 
     try {
       this.logger.info("acp prompt started", {
@@ -69,10 +73,10 @@ export class AcpAgentClient {
         sessionId: session.sessionId,
         cwd: session.cwd,
         timeoutMs: this.config.acp.promptTimeoutMs,
-        text: truncate(text, 120),
+        text: truncate(promptSummary, 120),
       });
 
-      const response = await this.promptWithTimeout(connection, session, text);
+      const response = await this.promptWithTimeout(connection, session, prompt);
 
       this.logger.info("acp prompt finished", {
         provider: this.provider.name,
@@ -111,13 +115,13 @@ export class AcpAgentClient {
     }
   }
 
-  private async promptWithTimeout(connection: acp.ClientSideConnection, session: AgentSession, text: string) {
+  private async promptWithTimeout(connection: acp.ClientSideConnection, session: AgentSession, prompt: AgentPromptContent) {
     let timer: NodeJS.Timeout | undefined;
     try {
       return await Promise.race([
         connection.prompt({
           sessionId: session.sessionId,
-          prompt: [{ type: "text", text }],
+          prompt,
         }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
@@ -192,6 +196,7 @@ export class AcpAgentClient {
       }),
       spawnError,
     ]);
+    this.agentCapabilities = result.agentCapabilities;
 
     this.logger.info("connected to acp agent", {
       provider: this.provider.name,
@@ -200,6 +205,12 @@ export class AcpAgentClient {
       protocolVersion: result.protocolVersion,
       capabilities: result.agentCapabilities,
     });
+  }
+
+  private assertPromptSupported(prompt: AgentPromptContent) {
+    if (prompt.some((block) => block.type === "image") && !this.agentCapabilities?.promptCapabilities?.image) {
+      throw new Error(`Agent "${this.provider.name}" does not support image prompts.`);
+    }
   }
 
   private async assertCwdExists() {
@@ -368,6 +379,26 @@ function contentToMarkdown(content: ContentBlock): string {
     case "resource":
       return `[resource:${content.resource.uri}]`;
   }
+}
+
+function summarizePrompt(prompt: AgentPromptContent) {
+  return prompt
+    .map((block) => {
+      switch (block.type) {
+        case "text":
+          return block.text;
+        case "image":
+          return `[image:${block.mimeType}]`;
+        case "audio":
+          return `[audio:${block.mimeType}]`;
+        case "resource_link":
+          return `[resource:${block.uri}]`;
+        case "resource":
+          return `[resource:${block.resource.uri}]`;
+      }
+    })
+    .join(" ")
+    .trim();
 }
 
 function toolContent(content?: ToolCallContent[]) {

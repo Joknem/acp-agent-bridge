@@ -32,6 +32,7 @@ const envSchema = z.object({
   FEISHU_DONE_REACTION: z.string().optional().default(""),
   FEISHU_ERROR_REACTION: z.string().optional().default(""),
   FEISHU_SEND_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
+  FEISHU_IMAGE_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   ACP_PROMPT_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error"]).default("info"),
   STATE_FILE: z.string().min(1).default(".data/state.json"),
@@ -79,6 +80,7 @@ export function loadConfig() {
     doneReaction: normalizeReactionType(parsed.data.FEISHU_DONE_REACTION),
     errorReaction: normalizeReactionType(parsed.data.FEISHU_ERROR_REACTION),
     sendTimeoutMs: parsed.data.FEISHU_SEND_TIMEOUT_MS,
+    imageMaxBytes: parsed.data.FEISHU_IMAGE_MAX_BYTES,
     stateFile: path.resolve(parsed.data.STATE_FILE),
     logLevel: parsed.data.LOG_LEVEL,
   };

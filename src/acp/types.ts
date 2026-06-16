@@ -1,3 +1,7 @@
+import type { ContentBlock } from "@agentclientprotocol/sdk";
+
+export type AgentPromptContent = ContentBlock[];
+
 export type AgentTurn = {
   sessionId: string;
   provider: string;
