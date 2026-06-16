@@ -36,6 +36,11 @@ type AckState = {
   reaction?: ReactionHandle;
 };
 
+type BindingTarget = {
+  cwd: string;
+  projectName?: string;
+};
+
 type ProcessTextOptions = {
   ackState?: AckState;
   chatType?: string;
@@ -431,6 +436,11 @@ export class FeishuBot {
       return;
     }
 
+    if (["new", "create"].includes(target.toLowerCase())) {
+      await this.handleBindNewCommand(chatId, args);
+      return;
+    }
+
     const bindingTarget = await this.resolveBindingTarget(target);
     const interrupted = await this.cancelActiveTurnForControl(chatId);
     this.agentManager.setCwd(chatId, bindingTarget.cwd);
@@ -452,6 +462,35 @@ export class FeishuBot {
     );
   }
 
+  private async handleBindNewCommand(chatId: string, args: string[]) {
+    const rawName = args[1];
+    const rawCwd = args[2];
+    if (!rawName) {
+      await this.sendMarkdown(chatId, "用法：`/bind new <project-name> [absolute-path]`", "创建并绑定项目");
+      return;
+    }
+
+    const bindingTarget = await this.createBindingTarget(rawName, rawCwd);
+    const interrupted = await this.cancelActiveTurnForControl(chatId);
+    this.agentManager.setCwd(chatId, bindingTarget.cwd);
+    this.stateStore.setProject(bindingTarget.projectName, bindingTarget.cwd);
+    this.stateStore.setBinding(chatId, bindingTarget);
+
+    await this.sendMarkdown(
+      chatId,
+      [
+        `${interrupted ? "已取消当前任务，并" : "已"}创建并绑定这个群聊到：\`${bindingTarget.cwd}\``,
+        `项目别名：\`${bindingTarget.projectName}\``,
+        "",
+        rawCwd ? "目录来自你指定的绝对路径。" : `目录默认创建在：\`${this.config.acp.cwd}\` 下。`,
+        "后续普通消息会直接发送给当前 agent，并使用这个目录作为 cwd。",
+        "查看绑定：`/bind`",
+        "解绑：`/unbind`",
+      ].join("\n"),
+      "项目已创建并绑定",
+    );
+  }
+
   private async handleUnbindCommand(chatId: string, chatType?: string) {
     if (!isGroupChat(chatType)) {
       await this.sendMarkdown(chatId, "私聊不需要解绑。私聊可以用 `/cwd` 或 `/project <name>` 切换目录。", "解绑项目");
@@ -467,6 +506,7 @@ export class FeishuBot {
         "",
         "未绑定前，普通消息不会发送给 agent。",
         "重新绑定：`/bind /absolute/path` 或 `/bind <project-name>`",
+        "创建新项目并绑定：`/bind new <name> [absolute-path]`",
       ].join("\n"),
       "群聊已解绑",
     );
@@ -519,7 +559,7 @@ export class FeishuBot {
     ].join("\n");
   }
 
-  private async resolveBindingTarget(target: string) {
+  private async resolveBindingTarget(target: string): Promise<BindingTarget> {
     const projectName = normalizeProjectName(target);
     const projectCwd = this.stateStore.getProject(projectName);
     if (projectCwd) {
@@ -530,6 +570,29 @@ export class FeishuBot {
     const cwd = path.resolve(target);
     await assertDirectory(cwd);
     return { cwd };
+  }
+
+  private async createBindingTarget(rawName: string, rawCwd?: string): Promise<Required<BindingTarget>> {
+    const projectName = normalizeNewProjectName(rawName);
+    const existingCwd = this.stateStore.getProject(projectName);
+
+    if (existingCwd) {
+      if (rawCwd) {
+        const requestedCwd = resolveNewProjectCwd(this.config.acp.cwd, projectName, rawCwd);
+        if (requestedCwd !== existingCwd) {
+          throw new Error(`项目别名已存在：${projectName} -> ${existingCwd}`);
+        }
+      }
+
+      await fs.mkdir(existingCwd, { recursive: true });
+      await assertDirectory(existingCwd);
+      return { cwd: existingCwd, projectName };
+    }
+
+    const cwd = resolveNewProjectCwd(this.config.acp.cwd, projectName, rawCwd);
+    await fs.mkdir(cwd, { recursive: true });
+    await assertDirectory(cwd);
+    return { cwd, projectName };
   }
 
   private renderBindingStatus(chatId: string, chatType?: string) {
@@ -549,6 +612,7 @@ export class FeishuBot {
       binding.projectName ? `项目别名：\`${binding.projectName}\`` : undefined,
       "",
       "切换绑定：`/bind /absolute/path` 或 `/bind <project-name>`",
+      "创建并绑定：`/bind new <name> [absolute-path]`",
       "移除绑定：`/unbind`",
     ]
       .filter((line): line is string => line !== undefined)
@@ -565,6 +629,7 @@ export class FeishuBot {
       "",
       "绑定目录：`/bind /absolute/path`",
       "绑定项目别名：`/bind <project-name>`",
+      "创建新项目并绑定：`/bind new <name> [absolute-path]`",
       "查看项目别名：`/project`",
       "",
       projectLines.length ? "可用项目别名：" : undefined,
@@ -648,6 +713,7 @@ export class FeishuBot {
       "- `/project add <name> [path]` 保存项目别名",
       "- `/project <name>` 切换到项目别名",
       "- `/bind <path-or-project>` 绑定群聊项目",
+      "- `/bind new <name> [absolute-path]` 创建新项目并绑定群聊",
       "- `/unbind` 移除群聊项目绑定",
       "- `/cancel` 取消当前任务",
       "- `/reset` 重置当前 agent session",
@@ -1176,6 +1242,27 @@ async function assertDirectory(target: string) {
   if (!stat.isDirectory()) {
     throw new Error(`不是目录：${target}`);
   }
+}
+
+function resolveNewProjectCwd(defaultRoot: string, projectName: string, rawCwd?: string) {
+  if (!rawCwd) {
+    return path.join(defaultRoot, projectName);
+  }
+
+  if (!path.isAbsolute(rawCwd)) {
+    throw new Error(`新项目路径必须是绝对路径：${rawCwd}`);
+  }
+
+  return path.resolve(rawCwd);
+}
+
+function normalizeNewProjectName(name: string) {
+  const normalized = normalizeProjectName(name);
+  if (!/^[a-z0-9][a-z0-9._-]{0,79}$/.test(normalized)) {
+    throw new Error("项目名只能包含小写字母、数字、点、下划线和短横线，并且必须以字母或数字开头。");
+  }
+
+  return normalized;
 }
 
 function splitCommand(input: string) {

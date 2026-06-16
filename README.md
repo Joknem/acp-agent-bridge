@@ -117,6 +117,7 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 /bind
 /bind /home/joknem/acp-create
 /bind acp
+/bind new demo /home/joknem/demo
 /unbind
 /help
 /status
@@ -162,11 +163,12 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 ```text
 /bind /home/joknem/acp-create
 /bind acp
+/bind new demo /home/joknem/demo
 /bind
 /unbind
 ```
 
-`/bind <absolute-path>` 会把群聊绑定到指定目录。`/bind <project-name>` 会优先使用 `/project add` 保存的项目别名。`/bind` 会显示当前群聊绑定状态，`/unbind` 会移除绑定。
+`/bind <absolute-path>` 会把群聊绑定到指定目录。`/bind <project-name>` 会优先使用 `/project add` 保存的项目别名。`/bind new <name> [absolute-path]` 会创建目录、保存同名项目别名，并把当前群聊绑定到该项目；省略路径时默认创建在 `ACP_DEFAULT_CWD/<name>`。`/bind` 会显示当前群聊绑定状态，`/unbind` 会移除绑定。
 
 在群聊中使用 `/cwd <path>` 或 `/project <name>` 时，也会同步更新群聊绑定。绑定信息和项目别名一样保存在 `.data/state.json`。
 
