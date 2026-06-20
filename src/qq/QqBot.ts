@@ -3,6 +3,7 @@ import type { AgentTurn } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import { truncate } from "../utils/text.js";
+import { QqAccessTokenProvider } from "./QqAccessToken.js";
 import { parseQqIncomingEvent, splitQqText, type QqConversation, type QqIncomingMessage } from "./qqMessages.js";
 
 type GatewayPayload = {
@@ -38,12 +39,19 @@ export class QqBot {
   private sequence: number | null = null;
   private stopped = false;
   private readonly chats = new Map<string, ChatState>();
+  private readonly auth: QqAccessTokenProvider;
 
   constructor(
     private readonly config: AppConfig,
     private readonly agentManager: AgentManager,
     private readonly logger: Logger,
-  ) {}
+  ) {
+    this.auth = new QqAccessTokenProvider({
+      appId: config.qq.appId,
+      appSecret: config.qq.appSecret,
+      legacyToken: config.qq.token,
+    });
+  }
 
   async start() {
     if (!this.config.qq.enabled) return;
@@ -88,7 +96,7 @@ export class QqBot {
 
   private async fetchGatewayUrl() {
     const response = await fetch(`${this.config.qq.apiBase}/gateway`, {
-      headers: this.authHeaders(),
+      headers: await this.authHeaders(),
     });
     const body = (await response.json().catch(() => ({}))) as { url?: unknown; message?: unknown };
     if (!response.ok || typeof body.url !== "string") {
@@ -105,7 +113,7 @@ export class QqBot {
 
     switch (payload.op) {
       case OP_HELLO:
-        this.identify();
+        await this.identify();
         this.startHeartbeat(payload.d);
         break;
       case OP_DISPATCH:
@@ -127,11 +135,11 @@ export class QqBot {
     }
   }
 
-  private identify() {
+  private async identify() {
     this.sendGatewayPayload({
       op: OP_IDENTIFY,
       d: {
-        token: this.qqToken(),
+        token: await this.auth.authorization(),
         intents: this.config.qq.intents,
         shard: [0, 1],
         properties: {
@@ -296,7 +304,7 @@ export class QqBot {
     const response = await fetch(`${this.config.qq.apiBase}${path}`, {
       method: "POST",
       headers: {
-        ...this.authHeaders(),
+        ...(await this.authHeaders()),
         "content-type": "application/json",
       },
       body: JSON.stringify({
@@ -349,14 +357,10 @@ export class QqBot {
     return state;
   }
 
-  private authHeaders() {
+  private async authHeaders() {
     return {
-      authorization: this.qqToken(),
+      authorization: await this.auth.authorization(),
     };
-  }
-
-  private qqToken() {
-    return `Bot ${this.config.qq.appId}.${this.config.qq.token}`;
   }
 }
 

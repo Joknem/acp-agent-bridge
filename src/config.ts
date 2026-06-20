@@ -40,6 +40,7 @@ const envSchema = z.object({
     .default("false")
     .transform((value) => value.toLowerCase() === "true"),
   QQ_BOT_APP_ID: z.string().optional().default(""),
+  QQ_BOT_APP_SECRET: z.string().optional().default(""),
   QQ_BOT_TOKEN: z.string().optional().default(""),
   QQ_BOT_SANDBOX: z
     .string()
@@ -75,8 +76,11 @@ export function loadConfig() {
         .join(", ")}`,
     );
   }
-  if (parsed.data.QQ_BOT_ENABLED && (!parsed.data.QQ_BOT_APP_ID || !parsed.data.QQ_BOT_TOKEN)) {
-    throw new Error("QQ_BOT_ENABLED=true requires QQ_BOT_APP_ID and QQ_BOT_TOKEN.");
+  if (
+    parsed.data.QQ_BOT_ENABLED &&
+    (!parsed.data.QQ_BOT_APP_ID || (!parsed.data.QQ_BOT_APP_SECRET && !parsed.data.QQ_BOT_TOKEN))
+  ) {
+    throw new Error("QQ_BOT_ENABLED=true requires QQ_BOT_APP_ID and QQ_BOT_APP_SECRET (or legacy QQ_BOT_TOKEN).");
   }
 
   return {
@@ -94,6 +98,7 @@ export function loadConfig() {
     qq: {
       enabled: parsed.data.QQ_BOT_ENABLED,
       appId: parsed.data.QQ_BOT_APP_ID,
+      appSecret: parsed.data.QQ_BOT_APP_SECRET,
       token: parsed.data.QQ_BOT_TOKEN,
       apiBase:
         parsed.data.QQ_BOT_API_BASE ||
