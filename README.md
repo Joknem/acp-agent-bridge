@@ -37,6 +37,15 @@ FEISHU_SEND_TIMEOUT_MS=15000
 FEISHU_IMAGE_MAX_BYTES=10485760
 ACP_PROMPT_TIMEOUT_MS=120000
 STATE_FILE=.data/state.json
+
+# QQ official bot adapter. Disabled unless explicitly enabled.
+QQ_BOT_ENABLED=false
+QQ_BOT_APP_ID=
+QQ_BOT_TOKEN=
+QQ_BOT_SANDBOX=false
+QQ_BOT_INTENTS=33554432
+QQ_BOT_REPLY_MAX_CHARS=1800
+QQ_BOT_RECONNECT_MS=5000
 ```
 
 程序会优先读取项目根目录的 `.env`，并覆盖 shell 中已有的同名环境变量，避免误连到旧的飞书应用。
@@ -65,6 +74,29 @@ kimi login
 飞书应用需要开启机器人能力、长连接，并订阅 `im.message.receive_v1` 事件。
 
 图片消息会通过飞书的消息资源接口下载后转发给 ACP agent。默认最大图片大小是 10MB，可通过 `FEISHU_IMAGE_MAX_BYTES` 调整；当前只支持飞书 `image` 消息，不支持表情包、文件附件或合并转发里的子消息资源。
+
+## QQ Official Bot Adapter
+
+QQ adapter 默认关闭；配置 QQ 官方机器人凭证后可与飞书并行启动：
+
+```env
+QQ_BOT_ENABLED=true
+QQ_BOT_APP_ID=123456789
+QQ_BOT_TOKEN=xxxxxxxxxxxxxxxx
+QQ_BOT_SANDBOX=true
+```
+
+`QQ_BOT_TOKEN` 对应 QQ 官方鉴权 token 中 `Bot {appid}.{token}` 的 token 部分。`QQ_BOT_SANDBOX=true` 会使用 `https://sandbox.api.sgroup.qq.com`，否则使用正式环境 `https://api.sgroup.qq.com`。
+
+当前 QQ adapter 第一版支持：
+
+- WebSocket Gateway 接收事件
+- `C2C_MESSAGE_CREATE` 单聊文本
+- `GROUP_AT_MESSAGE_CREATE` 群聊 @ 文本
+- 文本回复，长回复会按 `QQ_BOT_REPLY_MAX_CHARS` 拆分，并使用 `msg_id + msg_seq` 被动回复
+- 命令：`/status`、`/agent`、`/agent <name>`、`/reset`
+
+默认 intents 为 `33554432`，即 `1 << 25`，覆盖 QQ 单聊消息和群聊 @ 机器人消息。QQ 当前只接文本；图片、文件、频道消息和 QQ 侧项目绑定命令还没接入。
 
 ## Acknowledgement
 

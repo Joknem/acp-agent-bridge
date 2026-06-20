@@ -34,6 +34,22 @@ const envSchema = z.object({
   FEISHU_SEND_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
   FEISHU_IMAGE_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   ACP_PROMPT_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
+  QQ_BOT_ENABLED: z
+    .string()
+    .optional()
+    .default("false")
+    .transform((value) => value.toLowerCase() === "true"),
+  QQ_BOT_APP_ID: z.string().optional().default(""),
+  QQ_BOT_TOKEN: z.string().optional().default(""),
+  QQ_BOT_SANDBOX: z
+    .string()
+    .optional()
+    .default("false")
+    .transform((value) => value.toLowerCase() === "true"),
+  QQ_BOT_API_BASE: z.string().optional().default(""),
+  QQ_BOT_INTENTS: z.coerce.number().int().positive().default(1 << 25),
+  QQ_BOT_REPLY_MAX_CHARS: z.coerce.number().int().positive().default(1800),
+  QQ_BOT_RECONNECT_MS: z.coerce.number().int().positive().default(5000),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error"]).default("info"),
   STATE_FILE: z.string().min(1).default(".data/state.json"),
 });
@@ -59,6 +75,9 @@ export function loadConfig() {
         .join(", ")}`,
     );
   }
+  if (parsed.data.QQ_BOT_ENABLED && (!parsed.data.QQ_BOT_APP_ID || !parsed.data.QQ_BOT_TOKEN)) {
+    throw new Error("QQ_BOT_ENABLED=true requires QQ_BOT_APP_ID and QQ_BOT_TOKEN.");
+  }
 
   return {
     feishu: {
@@ -71,6 +90,17 @@ export function loadConfig() {
       defaultAgent,
       agents,
       promptTimeoutMs: parsed.data.ACP_PROMPT_TIMEOUT_MS,
+    },
+    qq: {
+      enabled: parsed.data.QQ_BOT_ENABLED,
+      appId: parsed.data.QQ_BOT_APP_ID,
+      token: parsed.data.QQ_BOT_TOKEN,
+      apiBase:
+        parsed.data.QQ_BOT_API_BASE ||
+        (parsed.data.QQ_BOT_SANDBOX ? "https://sandbox.api.sgroup.qq.com" : "https://api.sgroup.qq.com"),
+      intents: parsed.data.QQ_BOT_INTENTS,
+      replyMaxChars: parsed.data.QQ_BOT_REPLY_MAX_CHARS,
+      reconnectMs: parsed.data.QQ_BOT_RECONNECT_MS,
     },
     debug: parsed.data.DEBUG,
     showThinkingTool: parsed.data.SHOW_THINKING_TOOL,
