@@ -1,6 +1,7 @@
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
+import { AsyncSerialQueue } from "../utils/AsyncSerialQueue.js";
 import { AcpAgentClient } from "./AcpAgentClient.js";
 import type { AcpAgentProvider, AgentPromptContent, AgentSession, AgentTurn } from "./types.js";
 
@@ -14,6 +15,7 @@ export class AgentManager {
   private readonly providers = new Map<string, AcpAgentProvider>();
   private readonly clients = new Map<string, AcpAgentClient>();
   private readonly chats = new Map<string, ChatAgentState>();
+  private readonly promptQueues = new Map<string, AsyncSerialQueue>();
 
   constructor(
     private readonly config: AppConfig,
@@ -74,21 +76,32 @@ export class AgentManager {
 
   async prompt(chatId: string, prompt: AgentPromptContent): Promise<AgentTurn> {
     const state = this.getChatState(chatId);
-    const client = this.getClient(state.providerName);
-    let session = state.sessions.get(state.providerName);
+    const providerName = state.providerName;
+
+    return this.getPromptQueue(providerName).run(() => this.promptDirect(chatId, providerName, prompt));
+  }
+
+  providerQueueStatus(providerName: string) {
+    return this.getPromptQueue(providerName.toLowerCase()).status();
+  }
+
+  private async promptDirect(chatId: string, providerName: string, prompt: AgentPromptContent): Promise<AgentTurn> {
+    const state = this.getChatState(chatId);
+    const client = this.getClient(providerName);
+    let session = state.sessions.get(providerName);
 
     if (!session || session.cwd !== state.cwd) {
       session = await client.newSession(state.cwd);
-      state.sessions.set(state.providerName, session);
+      state.sessions.set(providerName, session);
     }
 
     try {
       return await client.prompt(session, prompt);
     } catch (error: unknown) {
-      state.sessions.delete(state.providerName);
+      state.sessions.delete(providerName);
       this.logger.warn("cleared chat agent session after prompt failure", {
         chatId,
-        provider: state.providerName,
+        provider: providerName,
         cwd: state.cwd,
         sessionId: session.sessionId,
         message: errorMessage(error),
@@ -151,6 +164,16 @@ export class AgentManager {
     }
 
     return client;
+  }
+
+  private getPromptQueue(providerName: string) {
+    let queue = this.promptQueues.get(providerName);
+    if (!queue) {
+      queue = new AsyncSerialQueue();
+      this.promptQueues.set(providerName, queue);
+    }
+
+    return queue;
   }
 
   private getChatState(chatId: string) {

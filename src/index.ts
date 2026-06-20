@@ -17,7 +17,7 @@ async function main() {
 
   const bot = new FeishuBot(config, agentManager, stateStore, logger);
   bot.start();
-  const qqBot = new QqBot(config, agentManager, logger);
+  const qqBot = new QqBot(config, agentManager, stateStore, logger);
   await qqBot.start();
 
   const shutdown = async (signal: NodeJS.Signals) => {

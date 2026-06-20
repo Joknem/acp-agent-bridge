@@ -53,6 +53,12 @@ assert.equal(typeof binding?.createdAt, "number");
 assert.equal(typeof binding?.updatedAt, "number");
 assert.equal(store.listBindings().length, 1);
 
+assert.equal(store.processedMessageCount(), 0);
+assert.equal(store.markProcessedMessage("feishu:message-a", 1_000), true);
+assert.equal(store.markProcessedMessage("feishu:message-a", 2_000), false);
+assert.equal(store.markProcessedMessage("qq:message-a", 3_000), true);
+assert.equal(store.processedMessageCount(), 2);
+
 assert.equal(store.deleteBinding("group_a"), true);
 assert.equal(store.deleteBinding("group_a"), false);
 await store.flush();

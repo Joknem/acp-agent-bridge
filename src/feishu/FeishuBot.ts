@@ -139,6 +139,14 @@ export class FeishuBot {
 
   private async handleMessage(event: ReceiveMessageEvent) {
     const message = event.message;
+    if (!this.stateStore.markProcessedMessage(`feishu:${message.message_id}`)) {
+      this.logger.info("ignored duplicate feishu message", {
+        messageId: message.message_id,
+        chatId: message.chat_id,
+      });
+      return;
+    }
+
     this.logger.info("received feishu message", {
       messageId: message.message_id,
       chatId: message.chat_id,
@@ -768,6 +776,7 @@ export class FeishuBot {
     const currentProvider = this.agentManager.currentProvider(chatId);
     const currentCwd = this.agentManager.currentCwd(chatId);
     const currentAgent = this.agentManager.listProviders().find((provider) => provider.name === currentProvider);
+    const providerQueue = this.agentManager.providerQueueStatus(currentProvider);
     const projects = this.stateStore.listProjects();
     const bindings = this.stateStore.listBindings();
     const binding = this.stateStore.getBinding(chatId);
@@ -779,6 +788,7 @@ export class FeishuBot {
       activeTurn ? `正在处理：\`${truncate(activeTurn.text, 80)}\`` : undefined,
       state.pendingBatch ? `正在合并消息：\`${state.pendingBatch.items.length}\`` : undefined,
       `排队消息：\`${state.queuedCount}\``,
+      `当前 agent 全局队列：\`${providerQueue.active ? "处理中" : "空闲"}，等待 ${providerQueue.queued}\``,
       chatType ? `聊天类型：\`${chatType}\`` : undefined,
       isGroupChat(chatType) ? `群聊绑定：${binding ? "`已绑定`" : "`未绑定`"}` : undefined,
       binding ? `绑定 cwd：\`${binding.cwd}\`` : undefined,
@@ -800,6 +810,7 @@ export class FeishuBot {
       `状态文件：\`${this.config.stateFile}\``,
       `项目别名数：\`${projects.length}\``,
       `群聊绑定数：\`${bindings.length}\``,
+      `消息去重缓存：\`${this.stateStore.processedMessageCount()}\``,
       "",
       "常用命令：",
       "- `/help`",

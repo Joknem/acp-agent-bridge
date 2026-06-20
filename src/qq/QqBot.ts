@@ -2,6 +2,7 @@ import type { AgentManager } from "../acp/AgentManager.js";
 import type { AgentPromptContent, AgentTurn } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
+import type { StateStore } from "../state/StateStore.js";
 import { inferImageMimeType, readWebStreamToBuffer } from "../utils/media.js";
 import { truncate } from "../utils/text.js";
 import { QqAccessTokenProvider } from "./QqAccessToken.js";
@@ -52,6 +53,7 @@ export class QqBot {
   constructor(
     private readonly config: AppConfig,
     private readonly agentManager: AgentManager,
+    private readonly stateStore: StateStore,
     private readonly logger: Logger,
   ) {
     this.auth = new QqAccessTokenProvider({
@@ -204,6 +206,15 @@ export class QqBot {
       return;
     }
 
+    if (!this.stateStore.markProcessedMessage(`qq:${message.messageId}`)) {
+      this.logger.info("ignored duplicate qq message", {
+        eventType: message.eventType,
+        chatId: message.conversation.chatId,
+        messageId: message.messageId,
+      });
+      return;
+    }
+
     this.logger.info("received qq message", {
       eventType: message.eventType,
       chatId: message.conversation.chatId,
@@ -341,14 +352,18 @@ export class QqBot {
   }
 
   private renderStatus(chatId: string, state: ChatState) {
+    const currentProvider = this.agentManager.currentProvider(chatId);
+    const providerQueue = this.agentManager.providerQueueStatus(currentProvider);
     return [
       state.activeTurn ? `状态：处理中 ${formatDuration(Date.now() - state.activeTurn.startedAt)}` : "状态：空闲",
       state.activeTurn ? `正在处理：${truncate(state.activeTurn.text, 80)}` : undefined,
       state.pendingBatch ? `正在合并消息：${state.pendingBatch.items.length}` : undefined,
       `排队消息：${state.queuedCount}`,
-      `当前 agent：${this.agentManager.currentProvider(chatId)}`,
+      `当前 agent：${currentProvider}`,
+      `当前 agent 全局队列：${providerQueue.active ? "处理中" : "空闲"}，等待 ${providerQueue.queued}`,
       `当前 cwd：${this.agentManager.currentCwd(chatId)}`,
       `消息合并窗口：${this.config.qq.messageMergeWindowMs}ms`,
+      `消息去重缓存：${this.stateStore.processedMessageCount()}`,
       "",
       "命令：/status /agent /agent <name> /reset",
     ]

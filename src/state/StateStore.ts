@@ -10,6 +10,10 @@ const bindingSchema = z.object({
   updatedAt: z.number().int().nonnegative(),
 });
 
+const processedMessageSchema = z.object({
+  seenAt: z.number().int().nonnegative(),
+});
+
 const stateSchema = z.object({
   version: z.literal(1),
   chats: z.record(
@@ -21,6 +25,7 @@ const stateSchema = z.object({
   ),
   projects: z.record(z.string(), z.string().min(1)),
   bindings: z.record(z.string(), bindingSchema).default({}),
+  processedMessages: z.record(z.string(), processedMessageSchema).default({}),
 });
 
 export type PersistedState = z.infer<typeof stateSchema>;
@@ -31,6 +36,7 @@ export class StateStore {
     chats: {},
     projects: {},
     bindings: {},
+    processedMessages: {},
   };
   private writeQueue: Promise<void> = Promise.resolve();
 
@@ -54,6 +60,7 @@ export class StateStore {
         chats: Object.keys(this.state.chats).length,
         projects: Object.keys(this.state.projects).length,
         bindings: Object.keys(this.state.bindings).length,
+        processedMessages: Object.keys(this.state.processedMessages).length,
       });
     } catch (error: unknown) {
       if (isNotFound(error)) {
@@ -129,6 +136,19 @@ export class StateStore {
       .sort((a, b) => a.chatId.localeCompare(b.chatId));
   }
 
+  markProcessedMessage(key: string, now = Date.now()) {
+    this.pruneProcessedMessages(now);
+    if (key in this.state.processedMessages) return false;
+
+    this.state.processedMessages[key] = { seenAt: now };
+    void this.save();
+    return true;
+  }
+
+  processedMessageCount() {
+    return Object.keys(this.state.processedMessages).length;
+  }
+
   async flush() {
     await this.writeQueue;
   }
@@ -148,11 +168,30 @@ export class StateStore {
 
     return this.writeQueue;
   }
+
+  private pruneProcessedMessages(now: number) {
+    let changed = false;
+    const entries = Object.entries(this.state.processedMessages);
+    const freshEntries = entries.filter(([, item]) => now - item.seenAt <= PROCESSED_MESSAGE_TTL_MS);
+    if (freshEntries.length !== entries.length) changed = true;
+
+    const sortedEntries = freshEntries.sort((a, b) => b[1].seenAt - a[1].seenAt);
+    const retainedEntries = sortedEntries.slice(0, PROCESSED_MESSAGE_MAX_ENTRIES);
+    if (retainedEntries.length !== freshEntries.length) changed = true;
+
+    if (changed) {
+      this.state.processedMessages = Object.fromEntries(retainedEntries);
+      void this.save();
+    }
+  }
 }
 
 export function normalizeProjectName(name: string) {
   return name.trim().toLowerCase();
 }
+
+const PROCESSED_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PROCESSED_MESSAGE_MAX_ENTRIES = 5000;
 
 function isNotFound(error: unknown) {
   return error instanceof Error && "code" in error && error.code === "ENOENT";

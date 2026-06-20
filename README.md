@@ -175,6 +175,10 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 
 控制命令会立即执行，不会排在普通任务后面。普通消息会按当前聊天串行处理；如果前面有任务，会先进入队列，并通过 reaction 和短消息提示。
 
+同一个 agent provider 的 ACP prompt 会再经过一层全局串行队列。也就是说，不同聊天可以分别排队，但最终同时打到 `kimi` 或 `codex` 的任务会按 provider 逐个执行，避免同一个 ACP 子进程并发 prompt 造成上下文或流状态错乱。
+
+平台事件会按消息 ID 做持久去重，避免飞书/QQ 重推同一事件时重复调用 agent。去重缓存保存在 `STATE_FILE` 中，默认保留最近 5000 条或 7 天内的消息。
+
 群聊默认需要先绑定项目目录，未绑定时普通消息不会发送给 agent。私聊不需要绑定，继续使用当前聊天的 cwd。
 
 ## Personal Project Aliases
@@ -233,6 +237,7 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 ```
 
 会显示当前忙闲状态、排队数量、聊天类型、群聊绑定、当前 agent、cwd、agent 启动命令、ACK 模式、debug 配置、状态文件路径、项目别名数量和群聊绑定数量。
+同时会显示当前 agent 的全局队列状态和消息去重缓存数量，便于判断任务是在聊天队列里等待，还是在 provider 全局队列里等待。
 
 查看帮助：
 
