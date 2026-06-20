@@ -1,9 +1,11 @@
 import type { AgentManager } from "../acp/AgentManager.js";
-import type { AgentTurn } from "../acp/types.js";
+import type { AgentPromptContent, AgentTurn } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
+import { inferImageMimeType, readWebStreamToBuffer } from "../utils/media.js";
 import { truncate } from "../utils/text.js";
 import { QqAccessTokenProvider } from "./QqAccessToken.js";
+import { hasExplicitQqPromptText, summarizeQqBatch, type QqPromptItem } from "./qqPromptBatch.js";
 import { parseQqIncomingEvent, splitQqText, type QqConversation, type QqIncomingMessage } from "./qqMessages.js";
 
 type GatewayPayload = {
@@ -18,10 +20,16 @@ type ActiveTurn = {
   text: string;
 };
 
+type PendingBatch = {
+  items: QqPromptItem[];
+  timer?: NodeJS.Timeout;
+};
+
 type ChatState = {
   queue: Promise<void>;
   queuedCount: number;
   activeTurn?: ActiveTurn;
+  pendingBatch?: PendingBatch;
 };
 
 const OP_DISPATCH = 0;
@@ -63,6 +71,10 @@ export class QqBot {
     this.stopped = true;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    for (const state of this.chats.values()) {
+      if (state.pendingBatch?.timer) clearTimeout(state.pendingBatch.timer);
+      state.pendingBatch = undefined;
+    }
     this.heartbeatTimer = undefined;
     this.reconnectTimer = undefined;
     this.ws?.close();
@@ -196,16 +208,73 @@ export class QqBot {
       eventType: message.eventType,
       chatId: message.conversation.chatId,
       messageId: message.messageId,
-      text: truncate(message.text, 120),
+      images: message.imageAttachments.length,
+      text: truncate(message.summary, 120),
     });
 
     const state = this.getChatState(message.conversation.chatId);
+    if (isImmediateCommand(message)) {
+      this.flushMessageBatch(message.conversation.chatId);
+      this.enqueueMessage(message, state);
+      return;
+    }
+
+    this.scheduleMessageBatch(message, state);
+  }
+
+  private enqueueMessage(message: QqIncomingMessage, state: ChatState) {
     state.queuedCount += 1;
     state.queue = state.queue
       .catch(() => undefined)
       .then(async () => {
         state.queuedCount = Math.max(0, state.queuedCount - 1);
         await this.processMessage(message, state);
+      });
+  }
+
+  private scheduleMessageBatch(message: QqIncomingMessage, state: ChatState) {
+    if (!state.pendingBatch) {
+      state.pendingBatch = { items: [] };
+    }
+
+    state.pendingBatch.items.push({ message });
+
+    if (state.pendingBatch.timer) {
+      clearTimeout(state.pendingBatch.timer);
+      state.pendingBatch.timer = undefined;
+    }
+
+    if (this.config.qq.messageMergeWindowMs === 0) {
+      this.flushMessageBatch(message.conversation.chatId);
+      return;
+    }
+
+    state.pendingBatch.timer = setTimeout(() => {
+      this.flushMessageBatch(message.conversation.chatId);
+    }, this.config.qq.messageMergeWindowMs);
+  }
+
+  private flushMessageBatch(chatId: string) {
+    const state = this.getChatState(chatId);
+    const batch = state.pendingBatch;
+    if (!batch) return;
+
+    if (batch.timer) clearTimeout(batch.timer);
+    state.pendingBatch = undefined;
+
+    const summary = summarizeQqBatch(batch.items);
+    this.logger.info("queued qq message batch", {
+      chatId,
+      messages: batch.items.length,
+      text: truncate(summary, 120),
+    });
+
+    state.queuedCount += 1;
+    state.queue = state.queue
+      .catch(() => undefined)
+      .then(async () => {
+        state.queuedCount = Math.max(0, state.queuedCount - 1);
+        await this.processMessageBatch(batch.items, state);
       });
   }
 
@@ -228,18 +297,28 @@ export class QqBot {
       return;
     }
 
+    await this.processMessageBatch([{ message }], state);
+  }
+
+  private async processMessageBatch(items: QqPromptItem[], state: ChatState) {
+    if (!items.length) return;
+
+    const firstMessage = items[0].message;
+    const chatId = firstMessage.conversation.chatId;
+    const summary = summarizeQqBatch(items);
     const activeTurn: ActiveTurn = {
       startedAt: Date.now(),
-      text: message.text,
+      text: summary,
     };
     state.activeTurn = activeTurn;
 
     try {
-      const turn = await this.agentManager.prompt(chatId, [{ type: "text", text: message.text }]);
-      await this.sendTurn(message.conversation, message.messageId, turn);
+      const prompt = await this.buildAgentPrompt(items);
+      const turn = await this.agentManager.prompt(chatId, prompt);
+      await this.sendTurn(firstMessage.conversation, firstMessage.messageId, turn);
     } catch (error: unknown) {
-      this.logger.error("qq agent turn failed", { chatId, message: errorMessage(error) });
-      await this.sendText(message.conversation, message.messageId, `执行失败：${errorMessage(error)}`);
+      this.logger.error("qq agent turn failed", { chatId, message: errorMessage(error), text: truncate(summary, 120) });
+      await this.sendText(firstMessage.conversation, firstMessage.messageId, `执行失败：${errorMessage(error)}`);
     } finally {
       if (state.activeTurn === activeTurn) state.activeTurn = undefined;
     }
@@ -265,9 +344,11 @@ export class QqBot {
     return [
       state.activeTurn ? `状态：处理中 ${formatDuration(Date.now() - state.activeTurn.startedAt)}` : "状态：空闲",
       state.activeTurn ? `正在处理：${truncate(state.activeTurn.text, 80)}` : undefined,
+      state.pendingBatch ? `正在合并消息：${state.pendingBatch.items.length}` : undefined,
       `排队消息：${state.queuedCount}`,
       `当前 agent：${this.agentManager.currentProvider(chatId)}`,
       `当前 cwd：${this.agentManager.currentCwd(chatId)}`,
+      `消息合并窗口：${this.config.qq.messageMergeWindowMs}ms`,
       "",
       "命令：/status /agent /agent <name> /reset",
     ]
@@ -287,6 +368,64 @@ export class QqBot {
   private async sendTurn(conversation: QqConversation, replyToMessageId: string, turn: AgentTurn) {
     const answer = turn.answerMarkdown || `(没有收到最终文本，停止原因：${turn.stopReason})`;
     await this.sendText(conversation, replyToMessageId, answer);
+  }
+
+  private async buildAgentPrompt(items: QqPromptItem[]): Promise<AgentPromptContent> {
+    const prompt: AgentPromptContent = [];
+    const imageCount = items.reduce((sum, item) => sum + item.message.imageAttachments.length, 0);
+    const hasExplicitText = items.some((item) => hasExplicitQqPromptText(item.message));
+
+    if (!hasExplicitText && imageCount > 0) {
+      prompt.push({
+        type: "text",
+        text: imageCount === 1 ? "请分析这张图片。" : `请分析这 ${imageCount} 张图片。`,
+      });
+    }
+
+    for (const item of items) {
+      const message = item.message;
+      if (message.text) {
+        prompt.push({ type: "text", text: message.text });
+      }
+
+      for (const attachment of message.imageAttachments) {
+        prompt.push(await this.downloadImageAttachment(message.messageId, attachment));
+      }
+    }
+
+    return prompt;
+  }
+
+  private async downloadImageAttachment(messageId: string, attachment: QqIncomingMessage["imageAttachments"][number]): Promise<AgentPromptContent[number]> {
+    const url = new URL(attachment.url);
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      throw new Error(`不支持的 QQ 图片链接协议：${url.protocol}`);
+    }
+
+    const response = await fetch(url);
+    const contentLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(contentLength) && contentLength > this.config.qq.imageMaxBytes) {
+      throw new Error(`图片过大：最大支持 ${this.config.qq.imageMaxBytes} bytes`);
+    }
+
+    if (!response.ok) {
+      throw new Error(`QQ image download failed: ${response.status} ${await response.text().catch(() => "")}`);
+    }
+
+    const buffer = await readWebStreamToBuffer(response.body, this.config.qq.imageMaxBytes);
+    const mimeType = inferImageMimeType(response.headers.get("content-type") || attachment.contentType, buffer);
+    this.logger.info("downloaded qq image", {
+      messageId,
+      filename: attachment.filename,
+      bytes: buffer.byteLength,
+      mimeType,
+    });
+
+    return {
+      type: "image",
+      data: buffer.toString("base64"),
+      mimeType,
+    };
   }
 
   private async sendText(conversation: QqConversation, replyToMessageId: string, text: string) {
@@ -391,4 +530,8 @@ function formatDuration(milliseconds: number) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isImmediateCommand(message: QqIncomingMessage) {
+  return message.imageAttachments.length === 0 && message.text.trim().startsWith("/");
 }

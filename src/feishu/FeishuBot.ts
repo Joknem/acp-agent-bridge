@@ -1,14 +1,20 @@
 import * as lark from "@larksuiteoapi/node-sdk";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { Readable } from "node:stream";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import { markdownToLarkCards, shouldUseLarkCard, type LarkCardContent } from "./larkCard.js";
 import { markdownToLarkPost, type LarkPostContent } from "../markdown/larkPost.js";
 import { parseIncomingFeishuMessage, type IncomingFeishuMessage } from "./incomingMessage.js";
+import {
+  hasExplicitPromptText,
+  isDefaultImagePrompt,
+  summarizeIncomingBatch,
+  type FeishuPromptItem,
+} from "./promptBatch.js";
 import type { StateStore } from "../state/StateStore.js";
 import { normalizeProjectName } from "../state/StateStore.js";
+import { inferImageMimeType, readNodeStreamToBuffer } from "../utils/media.js";
 import { truncate } from "../utils/text.js";
 import type { AgentManager } from "../acp/AgentManager.js";
 import { AgentPromptError } from "../acp/types.js";
@@ -38,13 +44,23 @@ type AckState = {
   reaction?: ReactionHandle;
 };
 
+type PendingIncoming = FeishuPromptItem & {
+  ackState?: AckState;
+};
+
+type PendingBatch = {
+  items: PendingIncoming[];
+  chatType?: string;
+  timer?: NodeJS.Timeout;
+};
+
 type BindingTarget = {
   cwd: string;
   projectName?: string;
 };
 
 type ProcessTextOptions = {
-  ackState?: AckState;
+  ackStates?: AckState[];
   chatType?: string;
 };
 
@@ -52,6 +68,7 @@ type ChatState = {
   queue: Promise<void>;
   queuedCount: number;
   activeTurn?: ActiveTurn;
+  pendingBatch?: PendingBatch;
   lastQueueNoticeAt?: number;
   lastBindNoticeAt?: number;
 };
@@ -164,21 +181,85 @@ export class FeishuBot {
     }
 
     const provider = this.agentManager.currentProvider(message.chat_id);
-    const ackState = await this.acknowledge(message.chat_id, message.message_id, provider);
 
     if (await this.maybeHandleUnboundGroupMessage(message.chat_id, message.chat_type)) {
-      await this.finishAcknowledgement(ackState, "cancelled");
       return;
     }
 
     const state = this.getChatState(message.chat_id);
     await this.maybeNotifyQueuedMessage(message.chat_id, incoming.summary, state);
+    const ackState = await this.acknowledgeMergedIncoming(message.chat_id, message.message_id, provider, state);
+    this.scheduleIncomingBatch(message.chat_id, {
+      messageId: message.message_id,
+      incoming,
+      ackState,
+    }, message.chat_type);
+  }
+
+  private async acknowledgeMergedIncoming(
+    chatId: string,
+    messageId: string,
+    provider: string,
+    state: ChatState,
+  ): Promise<AckState | undefined> {
+    if (this.config.ackMode === "message" && state.pendingBatch) {
+      return undefined;
+    }
+
+    return this.acknowledge(chatId, messageId, provider);
+  }
+
+  private scheduleIncomingBatch(chatId: string, item: PendingIncoming, chatType?: string) {
+    const state = this.getChatState(chatId);
+    if (!state.pendingBatch) {
+      state.pendingBatch = {
+        items: [],
+        chatType,
+      };
+    }
+
+    state.pendingBatch.items.push(item);
+    state.pendingBatch.chatType = chatType ?? state.pendingBatch.chatType;
+
+    if (state.pendingBatch.timer) {
+      clearTimeout(state.pendingBatch.timer);
+      state.pendingBatch.timer = undefined;
+    }
+
+    if (this.config.messageMergeWindowMs === 0) {
+      this.flushIncomingBatch(chatId);
+      return;
+    }
+
+    state.pendingBatch.timer = setTimeout(() => {
+      this.flushIncomingBatch(chatId);
+    }, this.config.messageMergeWindowMs);
+  }
+
+  private flushIncomingBatch(chatId: string) {
+    const state = this.getChatState(chatId);
+    const batch = state.pendingBatch;
+    if (!batch) return;
+
+    if (batch.timer) clearTimeout(batch.timer);
+    state.pendingBatch = undefined;
+
+    const summary = summarizeIncomingBatch(batch.items);
+    this.logger.info("queued feishu message batch", {
+      chatId,
+      messages: batch.items.length,
+      text: truncate(summary, 120),
+    });
+
     state.queuedCount += 1;
     state.queue = state.queue
       .catch(() => undefined)
       .then(async () => {
         state.queuedCount = Math.max(0, state.queuedCount - 1);
-        await this.processIncoming(message.chat_id, message.message_id, incoming, { ackState, chatType: message.chat_type });
+        await this.processIncomingBatch(chatId, batch.items, {
+          ackStates: batch.items.flatMap((pending) => (pending.ackState ? [pending.ackState] : [])),
+          chatType: batch.chatType,
+        });
       });
   }
 
@@ -245,64 +326,84 @@ export class FeishuBot {
         return;
       }
 
-      let ackState = options.ackState;
-      if (await this.maybeHandleUnboundGroupMessage(chatId, options.chatType)) {
-        await this.finishAcknowledgement(ackState, "cancelled");
-        return;
-      }
-
-      try {
-        await this.applyGroupBinding(chatId, options.chatType);
-      } catch (error: unknown) {
-        await this.finishAcknowledgement(ackState, "error");
-        throw error;
-      }
-
-      const provider = this.agentManager.currentProvider(chatId);
-      const cwd = this.agentManager.currentCwd(chatId);
-      this.logger.info("prompting acp agent", { chatId, provider, cwd, text: truncate(incoming.summary, 120) });
-
-      const state = this.getChatState(chatId);
-      const activeTurn: ActiveTurn = {
-        messageId,
-        provider,
-        cwd,
-        text: incoming.summary,
-        startedAt: Date.now(),
-      };
-      state.activeTurn = activeTurn;
-
-      try {
-        ackState ??= await this.acknowledge(chatId, messageId, provider);
-
-        const prompt = await this.buildAgentPrompt(messageId, incoming);
-        const turn = await this.agentManager.prompt(chatId, prompt);
-        await this.sendTurn(chatId, turn);
-        await this.finishAcknowledgement(ackState, "success");
-      } catch (error: unknown) {
-        await this.finishAcknowledgement(ackState, activeTurn.suppressError ? "cancelled" : "error");
-        if (activeTurn.suppressError) {
-          this.logger.info("suppressed cancelled turn error", {
-            chatId,
-            provider,
-            message: errorMessage(error),
-            text: truncate(incoming.summary, 120),
-          });
-          return;
-        }
-
-        throw error;
-      } finally {
-        if (state.activeTurn === activeTurn) {
-          state.activeTurn = undefined;
-        }
-      }
+      await this.processIncomingBatch(
+        chatId,
+        [{ messageId, incoming }],
+        options,
+      );
     } catch (error: unknown) {
       this.logTurnError(chatId, error);
       await this.sendMarkdown(chatId, this.renderTurnError(error), "执行失败").catch(async (sendError: unknown) => {
         this.logger.error("failed to send error message", errorMessage(sendError));
         await this.sendText(chatId, `执行失败：${errorMessage(error)}`);
       });
+    }
+  }
+
+  private async processIncomingBatch(chatId: string, items: PendingIncoming[], options: ProcessTextOptions = {}) {
+    if (!items.length) return;
+
+    const summary = summarizeIncomingBatch(items);
+    let ackStates = options.ackStates ?? [];
+    if (await this.maybeHandleUnboundGroupMessage(chatId, options.chatType)) {
+      await this.finishAcknowledgements(ackStates, "cancelled");
+      return;
+    }
+
+    try {
+      await this.applyGroupBinding(chatId, options.chatType);
+    } catch (error: unknown) {
+      await this.finishAcknowledgements(ackStates, "error");
+      throw error;
+    }
+
+    const provider = this.agentManager.currentProvider(chatId);
+    const cwd = this.agentManager.currentCwd(chatId);
+    this.logger.info("prompting acp agent", {
+      chatId,
+      provider,
+      cwd,
+      messages: items.length,
+      text: truncate(summary, 120),
+    });
+
+    const state = this.getChatState(chatId);
+    const activeTurn: ActiveTurn = {
+      messageId: items[0].messageId,
+      provider,
+      cwd,
+      text: summary,
+      startedAt: Date.now(),
+    };
+    state.activeTurn = activeTurn;
+
+    try {
+      if (!ackStates.length) {
+        const ackState = await this.acknowledge(chatId, items[0].messageId, provider);
+        ackStates = ackState ? [ackState] : [];
+      }
+
+      const prompt = await this.buildAgentPrompt(items);
+      const turn = await this.agentManager.prompt(chatId, prompt);
+      await this.sendTurn(chatId, turn);
+      await this.finishAcknowledgements(ackStates, "success");
+    } catch (error: unknown) {
+      await this.finishAcknowledgements(ackStates, activeTurn.suppressError ? "cancelled" : "error");
+      if (activeTurn.suppressError) {
+        this.logger.info("suppressed cancelled turn error", {
+          chatId,
+          provider,
+          message: errorMessage(error),
+          text: truncate(summary, 120),
+        });
+        return;
+      }
+
+      throw error;
+    } finally {
+      if (state.activeTurn === activeTurn) {
+        state.activeTurn = undefined;
+      }
     }
   }
 
@@ -676,6 +777,7 @@ export class FeishuBot {
     return [
       activeTurn ? `状态：\`处理中 ${formatDuration(Date.now() - activeTurn.startedAt)}\`` : "状态：`空闲`",
       activeTurn ? `正在处理：\`${truncate(activeTurn.text, 80)}\`` : undefined,
+      state.pendingBatch ? `正在合并消息：\`${state.pendingBatch.items.length}\`` : undefined,
       `排队消息：\`${state.queuedCount}\``,
       chatType ? `聊天类型：\`${chatType}\`` : undefined,
       isGroupChat(chatType) ? `群聊绑定：${binding ? "`已绑定`" : "`未绑定`"}` : undefined,
@@ -686,6 +788,7 @@ export class FeishuBot {
       currentAgent ? `agent 命令：\`${[currentAgent.command, ...currentAgent.args].join(" ")}\`` : undefined,
       `默认 agent：\`${this.config.acp.defaultAgent}\``,
       `ACP 超时：\`${this.config.acp.promptTimeoutMs}ms\``,
+      `消息合并窗口：\`${this.config.messageMergeWindowMs}ms\``,
       `ACK 模式：\`${this.config.ackMode}\``,
       this.config.ackMode === "reaction" ? `处理中 reaction：\`${this.config.processingReaction}\`` : undefined,
       this.config.doneReaction ? `完成 reaction：\`${this.config.doneReaction}\`` : undefined,
@@ -783,13 +886,33 @@ export class FeishuBot {
     await this.sendMarkdown(chatId, answer, `${turn.provider} 回复`);
   }
 
-  private async buildAgentPrompt(messageId: string, incoming: IncomingFeishuMessage): Promise<AgentPromptContent> {
-    if (incoming.kind === "text") {
-      return [{ type: "text", text: incoming.text }];
+  private async buildAgentPrompt(items: PendingIncoming[]): Promise<AgentPromptContent> {
+    const prompt: AgentPromptContent = [];
+    const imageItems = items.filter((item) => item.incoming.kind === "image");
+    const hasExplicitText = items.some((item) => hasExplicitPromptText(item.incoming));
+
+    if (!hasExplicitText && imageItems.length > 0) {
+      prompt.push({
+        type: "text",
+        text: imageItems.length === 1 ? "请分析这张图片。" : `请分析这 ${imageItems.length} 张图片。`,
+      });
     }
 
-    const image = await this.downloadMessageImage(messageId, incoming.imageKey);
-    return [{ type: "text", text: incoming.text }, image];
+    for (const item of items) {
+      const incoming = item.incoming;
+      if (incoming.kind === "text") {
+        prompt.push({ type: "text", text: incoming.text });
+        continue;
+      }
+
+      if (!isDefaultImagePrompt(incoming)) {
+        prompt.push({ type: "text", text: incoming.text });
+      }
+
+      prompt.push(await this.downloadMessageImage(item.messageId, incoming.imageKey));
+    }
+
+    return prompt;
   }
 
   private async downloadMessageImage(messageId: string, imageKey: string): Promise<AgentPromptContent[number]> {
@@ -804,7 +927,7 @@ export class FeishuBot {
         },
       }),
     );
-    const buffer = await this.withSendTimeout(readStreamToBuffer(resource.getReadableStream(), this.config.imageMaxBytes));
+    const buffer = await this.withSendTimeout(readNodeStreamToBuffer(resource.getReadableStream(), this.config.imageMaxBytes));
     const mimeType = inferImageMimeType(resource.headers?.["content-type"], buffer);
 
     this.logger.info("downloaded feishu image", {
@@ -933,6 +1056,10 @@ export class FeishuBot {
     if (finalReaction) {
       await this.addReaction(ackState.messageId, finalReaction);
     }
+  }
+
+  private async finishAcknowledgements(ackStates: AckState[], status: "success" | "error" | "cancelled") {
+    await Promise.all(ackStates.map((ackState) => this.finishAcknowledgement(ackState, status)));
   }
 
   private async addReaction(messageId: string, emojiType: string): Promise<ReactionHandle | undefined> {
@@ -1296,45 +1423,6 @@ async function assertDirectory(target: string) {
   if (!stat.isDirectory()) {
     throw new Error(`不是目录：${target}`);
   }
-}
-
-async function readStreamToBuffer(stream: Readable, maxBytes: number) {
-  const chunks: Buffer[] = [];
-  let totalBytes = 0;
-
-  for await (const chunk of stream) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    totalBytes += buffer.byteLength;
-    if (totalBytes > maxBytes) {
-      stream.destroy();
-      throw new Error(`图片过大：最大支持 ${formatBytes(maxBytes)}`);
-    }
-
-    chunks.push(buffer);
-  }
-
-  return Buffer.concat(chunks);
-}
-
-function inferImageMimeType(header: unknown, buffer: Buffer) {
-  const contentType = Array.isArray(header) ? header[0] : header;
-  if (typeof contentType === "string") {
-    const mimeType = contentType.split(";")[0]?.trim().toLowerCase();
-    if (mimeType?.startsWith("image/")) return mimeType;
-  }
-
-  if (buffer.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))) return "image/jpeg";
-  if (buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
-  if (buffer.subarray(0, 6).toString("ascii") === "GIF87a" || buffer.subarray(0, 6).toString("ascii") === "GIF89a") return "image/gif";
-  if (buffer.subarray(0, 4).toString("ascii") === "RIFF" && buffer.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
-
-  return "image/jpeg";
-}
-
-function formatBytes(bytes: number) {
-  if (bytes >= 1024 * 1024) return `${Math.floor(bytes / 1024 / 1024)}MB`;
-  if (bytes >= 1024) return `${Math.floor(bytes / 1024)}KB`;
-  return `${bytes}B`;
 }
 
 function resolveNewProjectCwd(defaultRoot: string, projectName: string, rawCwd?: string) {

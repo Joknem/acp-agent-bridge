@@ -33,6 +33,7 @@ const envSchema = z.object({
   FEISHU_ERROR_REACTION: z.string().optional().default(""),
   FEISHU_SEND_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
   FEISHU_IMAGE_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+  FEISHU_MESSAGE_MERGE_WINDOW_MS: z.coerce.number().int().min(0).default(2000),
   ACP_PROMPT_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   QQ_BOT_ENABLED: z
     .string()
@@ -51,6 +52,8 @@ const envSchema = z.object({
   QQ_BOT_INTENTS: z.coerce.number().int().positive().default(1 << 25),
   QQ_BOT_REPLY_MAX_CHARS: z.coerce.number().int().positive().default(1800),
   QQ_BOT_RECONNECT_MS: z.coerce.number().int().positive().default(5000),
+  QQ_BOT_IMAGE_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+  QQ_BOT_MESSAGE_MERGE_WINDOW_MS: z.coerce.number().int().min(0).default(2000),
   LOG_LEVEL: z.enum(["trace", "debug", "info", "warn", "error"]).default("info"),
   STATE_FILE: z.string().min(1).default(".data/state.json"),
 });
@@ -106,6 +109,8 @@ export function loadConfig() {
       intents: parsed.data.QQ_BOT_INTENTS,
       replyMaxChars: parsed.data.QQ_BOT_REPLY_MAX_CHARS,
       reconnectMs: parsed.data.QQ_BOT_RECONNECT_MS,
+      imageMaxBytes: parsed.data.QQ_BOT_IMAGE_MAX_BYTES,
+      messageMergeWindowMs: parsed.data.QQ_BOT_MESSAGE_MERGE_WINDOW_MS,
     },
     debug: parsed.data.DEBUG,
     showThinkingTool: parsed.data.SHOW_THINKING_TOOL,
@@ -116,6 +121,7 @@ export function loadConfig() {
     errorReaction: normalizeReactionType(parsed.data.FEISHU_ERROR_REACTION),
     sendTimeoutMs: parsed.data.FEISHU_SEND_TIMEOUT_MS,
     imageMaxBytes: parsed.data.FEISHU_IMAGE_MAX_BYTES,
+    messageMergeWindowMs: parsed.data.FEISHU_MESSAGE_MERGE_WINDOW_MS,
     stateFile: path.resolve(parsed.data.STATE_FILE),
     logLevel: parsed.data.LOG_LEVEL,
   };
