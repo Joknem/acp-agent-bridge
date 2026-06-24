@@ -106,3 +106,7 @@ Every ordinary agent prompt gets a `turnId`. Platform adapters store it on the c
 - timeout and failure replies sent back to chat
 
 Timeout failures include whether the bridge attempted to cancel the ACP session, whether that cancellation succeeded, and the recent stderr tail from the agent process. Platform adapters retain the most recent unsuppressed failure in memory so `/status` and `/doctor chat` can show the last failed turn.
+
+## Testing
+
+`test/acpE2e.test.ts` starts `test/fixtures/fakeAcpAgent.mjs` as a real stdio ACP process. It covers prompt success, persisted session resume, prompt timeout, automatic cancel, stderr capture, and failed-session cleanup.
