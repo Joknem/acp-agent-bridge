@@ -37,6 +37,7 @@ They should not grow generic agent-flow behavior when the behavior can be shared
 - `src/core/CommandRouter.ts`
 - `src/core/IncomingMessagePipeline.ts`
 - `src/core/Doctor.ts`
+- `src/core/ReplyFormatter.ts`
 
 This layer is platform-neutral. It is the beginning of a shared pipeline inspired by messaging-adapter architectures:
 
@@ -46,8 +47,9 @@ This layer is platform-neutral. It is the beginning of a shared pipeline inspire
 - `CommandRouter` parses slash commands once and lets adapters register platform-specific command handlers.
 - `IncomingMessagePipeline` coordinates batching, queueing, and batch error handling for ordinary platform messages.
 - `Doctor` runs platform-neutral configuration, state, agent, and chat diagnostics that adapters can expose through commands.
+- `ReplyFormatter` normalizes agent/command/error replies once, preserving Markdown for rich platforms while producing cleaner plain text for QQ-style channels.
 
-The next good extraction is a shared `ReplyAdapter`, so Feishu and QQ only provide platform-specific ingress, media download, reactions, and send primitives.
+The next good extraction is a fuller shared `ReplyAdapter`, so Feishu and QQ only provide platform-specific ingress, media download, reactions, and send primitives.
 
 ### Agent Gateway
 
@@ -68,9 +70,10 @@ Persisted state includes per-chat provider/cwd, project aliases, group bindings,
 
 - `src/markdown/larkPost.ts`
 - `src/feishu/larkCard.ts`
+- `src/core/ReplyFormatter.ts`
 - QQ text splitting in `src/qq/qqMessages.ts`
 
-Platform renderers convert agent Markdown into platform-specific message formats. Feishu uses `post` or interactive cards; QQ currently sends text chunks.
+Platform renderers convert agent Markdown into platform-specific message formats. Feishu uses `post` or interactive cards; QQ receives a plain-text rendering from `ReplyFormatter` and then sends text chunks.
 
 ## Design Direction
 

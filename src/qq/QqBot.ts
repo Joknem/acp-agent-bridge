@@ -2,8 +2,9 @@ import type { AgentManager } from "../acp/AgentManager.js";
 import type { AgentPromptContent, AgentTurn } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
-import { formatDoctorReport, parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
+import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
+import { formatAgentReply, formatDoctorReply, formatErrorReply, formatReplyForPlainText, type FormattedReply } from "../core/ReplyFormatter.js";
 import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
 import { inferImageMimeType, readWebStreamToBuffer } from "../utils/media.js";
@@ -300,7 +301,7 @@ export class QqBot {
       await this.sendTurn(firstMessage.conversation, firstMessage.messageId, turn);
     } catch (error: unknown) {
       this.logger.error("qq agent turn failed", { chatId, message: errorMessage(error), text: truncate(summary, 120) });
-      await this.sendText(firstMessage.conversation, firstMessage.messageId, `执行失败：${errorMessage(error)}`);
+      await this.sendReply(firstMessage.conversation, firstMessage.messageId, formatErrorReply(errorMessage(error)));
     } finally {
       if (state.activeTurn === activeTurn) state.activeTurn = undefined;
     }
@@ -348,7 +349,7 @@ export class QqBot {
       scope: parseDoctorScope(command.args[0]),
     });
 
-    await this.sendText(message.conversation, message.messageId, formatDoctorReport(report));
+    await this.sendReply(message.conversation, message.messageId, formatDoctorReply(report));
   }
 
   private async handleUnknownCommand(message: QqIncomingMessage, command: SlashCommand) {
@@ -400,8 +401,7 @@ export class QqBot {
   }
 
   private async sendTurn(conversation: QqConversation, replyToMessageId: string, turn: AgentTurn) {
-    const answer = turn.answerMarkdown || `(没有收到最终文本，停止原因：${turn.stopReason})`;
-    await this.sendText(conversation, replyToMessageId, answer);
+    await this.sendReply(conversation, replyToMessageId, formatAgentReply(turn));
   }
 
   private async buildAgentPrompt(items: QqPromptItem[]): Promise<AgentPromptContent> {
@@ -467,6 +467,10 @@ export class QqBot {
     for (const [index, chunk] of chunks.entries()) {
       await this.sendTextChunk(conversation, replyToMessageId, chunks.length > 1 ? `(${index + 1}/${chunks.length})\n${chunk}` : chunk, index + 1);
     }
+  }
+
+  private async sendReply(conversation: QqConversation, replyToMessageId: string, reply: FormattedReply) {
+    await this.sendText(conversation, replyToMessageId, formatReplyForPlainText(reply));
   }
 
   private async sendTextChunk(conversation: QqConversation, replyToMessageId: string, content: string, msgSeq: number) {

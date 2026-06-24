@@ -4,8 +4,9 @@ import path from "node:path";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
-import { formatDoctorReport, parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
+import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
+import { formatAgentReply, formatDoctorReply, formatMarkdownReply, formatReplyForPlainText, type FormattedReply } from "../core/ReplyFormatter.js";
 import { markdownToLarkCards, shouldUseLarkCard, type LarkCardContent } from "./larkCard.js";
 import { markdownToLarkPost, type LarkPostContent } from "../markdown/larkPost.js";
 import { parseIncomingFeishuMessage, type IncomingFeishuMessage } from "./incomingMessage.js";
@@ -153,9 +154,10 @@ export class FeishuBot {
       },
       onBatchError: async (error, event) => {
         this.logTurnError(event.chatId, error);
-        await this.sendMarkdown(event.chatId, this.renderTurnError(error), "执行失败").catch(async (sendError: unknown) => {
+        const reply = formatMarkdownReply(this.renderTurnError(error), "执行失败", "error");
+        await this.sendReply(event.chatId, reply).catch(async (sendError: unknown) => {
           this.logger.error("failed to send error message", errorMessage(sendError));
-          await this.sendText(event.chatId, `执行失败：${errorMessage(error)}`);
+          await this.sendText(event.chatId, formatReplyForPlainText(reply));
         });
       },
     });
@@ -289,9 +291,10 @@ export class FeishuBot {
       );
     } catch (error: unknown) {
       this.logTurnError(chatId, error);
-      await this.sendMarkdown(chatId, this.renderTurnError(error), "执行失败").catch(async (sendError: unknown) => {
+      const reply = formatMarkdownReply(this.renderTurnError(error), "执行失败", "error");
+      await this.sendReply(chatId, reply).catch(async (sendError: unknown) => {
         this.logger.error("failed to send error message", errorMessage(sendError));
-        await this.sendText(chatId, `执行失败：${errorMessage(error)}`);
+        await this.sendText(chatId, formatReplyForPlainText(reply));
       });
     }
   }
@@ -732,7 +735,7 @@ export class FeishuBot {
       scope: parseDoctorScope(command.args[0]),
     });
 
-    await this.sendMarkdown(chatId, formatDoctorReport(report), "Doctor");
+    await this.sendReply(chatId, formatDoctorReply(report));
   }
 
   private async handlePingCommand(chatId: string) {
@@ -861,12 +864,11 @@ export class FeishuBot {
     if (this.config.debug && this.config.showThinkingTool !== "force") {
       const debugMarkdown = buildDebugMarkdown(turn, this.config.showThinkingTool);
       if (debugMarkdown) {
-        await this.sendMarkdown(chatId, debugMarkdown, "调试信息");
+        await this.sendReply(chatId, formatMarkdownReply(debugMarkdown, "调试信息", "debug"));
       }
     }
 
-    const answer = turn.answerMarkdown || `(没有收到最终文本，停止原因：${turn.stopReason})`;
-    await this.sendMarkdown(chatId, answer, `${turn.provider} 回复`);
+    await this.sendReply(chatId, formatAgentReply(turn));
   }
 
   private async buildAgentPrompt(items: PendingIncoming[]): Promise<AgentPromptContent> {
@@ -944,6 +946,10 @@ export class FeishuBot {
       this.logger.warn("failed to send lark post, falling back to text", errorMessage(error));
       await this.sendText(chatId, `${title ? `${title}\n\n` : ""}${markdown}`);
     }
+  }
+
+  private async sendReply(chatId: string, reply: FormattedReply) {
+    await this.sendMarkdown(chatId, reply.markdown, reply.title);
   }
 
   private async sendInteractiveCards(chatId: string, cards: LarkCardContent[]) {
