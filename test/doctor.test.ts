@@ -79,6 +79,7 @@ const report = await runDoctor({
     currentProvider: "codex",
     currentCwd: dir,
     queued: 0,
+    activeTurnId: "feishu-mabc-1",
   },
   platform: {
     feishu: [{ status: "ok", label: "凭证实时检查", detail: "通过" }],
@@ -93,6 +94,7 @@ assert(formatted.includes("definitely-not-a-real-command"));
 assert(formatted.includes("FAIL"));
 assert(formatted.includes("Gateway"));
 assert(formatted.includes("当前聊天"));
+assert(formatted.includes("feishu-mabc-1"));
 
 const agentOnly = await runDoctor({
   config,

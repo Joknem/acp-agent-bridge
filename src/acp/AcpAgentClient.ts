@@ -16,7 +16,14 @@ import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import { resolveInsideRoot } from "../utils/pathSafety.js";
 import { truncate } from "../utils/text.js";
-import { AgentPromptError, type AcpAgentProvider, type AgentPromptContent, type AgentSession, type AgentTurn } from "./types.js";
+import {
+  AgentPromptError,
+  type AcpAgentProvider,
+  type AgentPromptContent,
+  type AgentPromptOptions,
+  type AgentSession,
+  type AgentTurn,
+} from "./types.js";
 
 type TurnBuffer = {
   answer: string[];
@@ -58,7 +65,7 @@ export class AcpAgentClient {
     return { sessionId: session.sessionId, cwd };
   }
 
-  async prompt(session: AgentSession, prompt: AgentPromptContent): Promise<AgentTurn> {
+  async prompt(session: AgentSession, prompt: AgentPromptContent, options: AgentPromptOptions = {}): Promise<AgentTurn> {
     await this.start();
     const connection = this.requireConnection();
     this.assertPromptSupported(prompt);
@@ -69,6 +76,7 @@ export class AcpAgentClient {
 
     try {
       this.logger.info("acp prompt started", {
+        turnId: options.turnId,
         provider: this.provider.name,
         sessionId: session.sessionId,
         cwd: session.cwd,
@@ -79,6 +87,7 @@ export class AcpAgentClient {
       const response = await this.promptWithTimeout(connection, session, prompt);
 
       this.logger.info("acp prompt finished", {
+        turnId: options.turnId,
         provider: this.provider.name,
         sessionId: session.sessionId,
         stopReason: response.stopReason,
@@ -91,6 +100,7 @@ export class AcpAgentClient {
       return {
         sessionId: session.sessionId,
         provider: this.provider.name,
+        turnId: options.turnId,
         answerMarkdown: buffer.answer.join("").trim(),
         thoughtMarkdown: buffer.thought.join("").trim(),
         toolMarkdown: buffer.tools.join("\n\n").trim(),
@@ -107,6 +117,7 @@ export class AcpAgentClient {
         provider: this.provider.name,
         cwd: session.cwd,
         sessionId: session.sessionId,
+        turnId: options.turnId,
         recentStderr: this.stderrTail,
       });
     } finally {

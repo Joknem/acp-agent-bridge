@@ -39,6 +39,7 @@ They should not grow generic agent-flow behavior when the behavior can be shared
 - `src/core/Doctor.ts`
 - `src/core/ReplyFormatter.ts`
 - `src/core/ReplyAdapter.ts`
+- `src/core/TurnId.ts`
 
 This layer is platform-neutral. It is the beginning of a shared pipeline inspired by messaging-adapter architectures:
 
@@ -50,8 +51,9 @@ This layer is platform-neutral. It is the beginning of a shared pipeline inspire
 - `Doctor` runs platform-neutral configuration, state, agent, and chat diagnostics that adapters can expose through commands.
 - `ReplyFormatter` normalizes agent/command/error replies once, preserving Markdown for rich platforms while producing cleaner plain text for QQ-style channels.
 - `ReplyAdapter` delivers formatted replies through platform send primitives, including markdown-to-text fallback for rich platforms.
+- `TurnId` gives each ordinary agent prompt a short searchable identifier that is shown in `/status`, `/doctor chat`, logs, and prompt errors.
 
-The next good extraction is shared observability around agent turns, so timeout and queue state can be inspected consistently across platforms.
+The next good extraction is durable ACP session resume, so service restarts can preserve more conversation context.
 
 ### Agent Gateway
 
@@ -93,3 +95,12 @@ PlatformAdapter
 ```
 
 This keeps platform SDK details at the edges while preserving the project-specific ACP features: cwd binding, provider switching, message dedupe, media prompts, and long-running coding-agent sessions.
+
+## Observability
+
+Every ordinary agent prompt gets a `turnId`. Platform adapters store it on the current active turn; `AgentManager` and `AcpAgentClient` propagate it through prompt logs and `AgentPromptError` details. This gives one handle to correlate:
+
+- `/status` active task output
+- `/doctor chat` diagnostics
+- `prompting acp agent`, `acp prompt started`, and `acp prompt finished` logs
+- timeout and failure replies sent back to chat

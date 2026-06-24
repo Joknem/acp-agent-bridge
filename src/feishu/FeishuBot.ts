@@ -7,6 +7,7 @@ import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/Comman
 import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import { ReplyAdapter } from "../core/ReplyAdapter.js";
+import { createTurnId } from "../core/TurnId.js";
 import { markdownToLarkCards, shouldUseLarkCard, type LarkCardContent } from "./larkCard.js";
 import { markdownToLarkPost, type LarkPostContent } from "../markdown/larkPost.js";
 import { parseIncomingFeishuMessage, type IncomingFeishuMessage } from "./incomingMessage.js";
@@ -29,6 +30,7 @@ type ReceiveMessageEvent = NonNullable<lark.EventHandles["im.message.receive_v1"
   : never;
 
 type ActiveTurn = {
+  turnId: string;
   messageId: string;
   provider: string;
   cwd: string;
@@ -167,7 +169,8 @@ export class FeishuBot {
       },
       onBatchError: async (error, event) => {
         this.logTurnError(event.chatId, error);
-        await this.replies.sendMarkdown(event.chatId, this.renderTurnError(error), "执行失败", "error").catch((sendError: unknown) => {
+        const turnId = this.getChatState(event.chatId).activeTurn?.turnId;
+        await this.replies.sendMarkdown(event.chatId, this.renderTurnError(error, turnId), "执行失败", "error").catch((sendError: unknown) => {
           this.logger.error("failed to send error message", errorMessage(sendError));
         });
       },
@@ -302,7 +305,8 @@ export class FeishuBot {
       );
     } catch (error: unknown) {
       this.logTurnError(chatId, error);
-      await this.replies.sendMarkdown(chatId, this.renderTurnError(error), "执行失败", "error").catch(async (sendError: unknown) => {
+      const turnId = this.getChatState(chatId).activeTurn?.turnId;
+      await this.replies.sendMarkdown(chatId, this.renderTurnError(error, turnId), "执行失败", "error").catch(async (sendError: unknown) => {
         this.logger.error("failed to send error message", errorMessage(sendError));
       });
     }
@@ -327,7 +331,9 @@ export class FeishuBot {
 
     const provider = this.agentManager.currentProvider(chatId);
     const cwd = this.agentManager.currentCwd(chatId);
+    const turnId = createTurnId("feishu");
     this.logger.info("prompting acp agent", {
+      turnId,
       chatId,
       provider,
       cwd,
@@ -337,6 +343,7 @@ export class FeishuBot {
 
     const state = this.getChatState(chatId);
     const activeTurn: ActiveTurn = {
+      turnId,
       messageId: items[0].messageId,
       provider,
       cwd,
@@ -352,7 +359,7 @@ export class FeishuBot {
       }
 
       const prompt = await this.buildAgentPrompt(items);
-      const turn = await this.agentManager.prompt(chatId, prompt);
+      const turn = await this.agentManager.prompt(chatId, prompt, { turnId });
       await this.sendTurn(chatId, turn);
       await this.finishAcknowledgements(ackStates, "success");
     } catch (error: unknown) {
@@ -360,6 +367,7 @@ export class FeishuBot {
       if (activeTurn.suppressError) {
         this.logger.info("suppressed cancelled turn error", {
           chatId,
+          turnId,
           provider,
           message: errorMessage(error),
           text: truncate(summary, 120),
@@ -765,6 +773,7 @@ export class FeishuBot {
 
     return [
       activeTurn ? `状态：\`处理中 ${formatDuration(Date.now() - activeTurn.startedAt)}\`` : "状态：`空闲`",
+      activeTurn ? `Turn ID：\`${activeTurn.turnId}\`` : undefined,
       activeTurn ? `正在处理：\`${truncate(activeTurn.text, 80)}\`` : undefined,
       state.pendingBatcher?.hasPending() ? `正在合并消息：\`${state.pendingBatcher.pendingCount()}\`` : undefined,
       `排队消息：\`${queueStatus.queued}\``,
@@ -1170,7 +1179,9 @@ export class FeishuBot {
     const now = Date.now();
     if (!state.lastQueueNoticeAt || now - state.lastQueueNoticeAt >= QUEUE_NOTICE_COOLDOWN_MS) {
       state.lastQueueNoticeAt = now;
-      const activeText = state.activeTurn ? `当前正在处理：\`${truncate(state.activeTurn.text, 80)}\`` : "前面还有消息正在排队。";
+      const activeText = state.activeTurn
+        ? `当前正在处理：\`${truncate(state.activeTurn.text, 80)}\`\nTurn ID：\`${state.activeTurn.turnId}\``
+        : "前面还有消息正在排队。";
       await this.sendMarkdown(
         chatId,
         [`已加入队列：\`${truncate(text, 80)}\``, activeText, "", "可发送 `/cancel` 取消当前任务，或 `/status` 查看状态。"].join("\n"),
@@ -1196,33 +1207,46 @@ export class FeishuBot {
   }
 
   private logTurnError(chatId: string, error: unknown) {
+    const activeTurn = this.getChatState(chatId).activeTurn;
     if (error instanceof AgentPromptError) {
       this.logger.error("agent turn failed", {
         chatId,
         message: error.message,
         ...error.details,
+        turnId: error.details.turnId ?? activeTurn?.turnId,
       });
       return;
     }
 
-    this.logger.error("agent turn failed", errorMessage(error));
+    this.logger.error("agent turn failed", { chatId, turnId: activeTurn?.turnId, message: errorMessage(error) });
   }
 
-  private renderTurnError(error: unknown) {
+  private renderTurnError(error: unknown, turnId?: string) {
     if (error instanceof AgentPromptError) {
       const suggestion = permissionSuggestion(error.message);
+      const resolvedTurnId = error.details.turnId ?? turnId;
       return [
-        `执行失败：\`${error.message}\``,
+        `错误：\`${error.message}\``,
         "",
+        resolvedTurnId ? `turn：\`${resolvedTurnId}\`` : undefined,
         `agent：\`${error.details.provider}\``,
         `cwd：\`${error.details.cwd}\``,
         `session：\`${error.details.sessionId}\``,
         "",
         suggestion,
-      ].join("\n");
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join("\n");
     }
 
-    return [`执行失败：\`${errorMessage(error)}\``, "", permissionSuggestion(errorMessage(error))].join("\n");
+    return [
+      `错误：\`${errorMessage(error)}\``,
+      "",
+      turnId ? `turn：\`${turnId}\`` : undefined,
+      permissionSuggestion(errorMessage(error)),
+    ]
+      .filter((line): line is string => line !== undefined)
+      .join("\n");
   }
 
   private async withSendTimeout<T>(promise: Promise<T>): Promise<T> {
@@ -1256,6 +1280,7 @@ export class FeishuBot {
       currentCwd: this.agentManager.currentCwd(chatId),
       queued: state.queue.status().queued,
       pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
+      activeTurnId: state.activeTurn?.turnId,
       activeText: state.activeTurn ? truncate(state.activeTurn.text, 120) : undefined,
       binding: this.stateStore.getBinding(chatId),
     };

@@ -3,7 +3,7 @@ import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
 import { AsyncSerialQueue } from "../utils/AsyncSerialQueue.js";
 import { AcpAgentClient } from "./AcpAgentClient.js";
-import type { AcpAgentProvider, AgentPromptContent, AgentSession, AgentTurn } from "./types.js";
+import type { AcpAgentProvider, AgentPromptContent, AgentPromptOptions, AgentSession, AgentTurn } from "./types.js";
 
 type ChatAgentState = {
   providerName: string;
@@ -74,18 +74,23 @@ export class AgentManager {
     return normalized;
   }
 
-  async prompt(chatId: string, prompt: AgentPromptContent): Promise<AgentTurn> {
+  async prompt(chatId: string, prompt: AgentPromptContent, options: AgentPromptOptions = {}): Promise<AgentTurn> {
     const state = this.getChatState(chatId);
     const providerName = state.providerName;
 
-    return this.getPromptQueue(providerName).run(() => this.promptDirect(chatId, providerName, prompt));
+    return this.getPromptQueue(providerName).run(() => this.promptDirect(chatId, providerName, prompt, options));
   }
 
   providerQueueStatus(providerName: string) {
     return this.getPromptQueue(providerName.toLowerCase()).status();
   }
 
-  private async promptDirect(chatId: string, providerName: string, prompt: AgentPromptContent): Promise<AgentTurn> {
+  private async promptDirect(
+    chatId: string,
+    providerName: string,
+    prompt: AgentPromptContent,
+    options: AgentPromptOptions,
+  ): Promise<AgentTurn> {
     const state = this.getChatState(chatId);
     const client = this.getClient(providerName);
     let session = state.sessions.get(providerName);
@@ -96,10 +101,11 @@ export class AgentManager {
     }
 
     try {
-      return await client.prompt(session, prompt);
+      return await client.prompt(session, prompt, options);
     } catch (error: unknown) {
       state.sessions.delete(providerName);
       this.logger.warn("cleared chat agent session after prompt failure", {
+        turnId: options.turnId,
         chatId,
         provider: providerName,
         cwd: state.cwd,

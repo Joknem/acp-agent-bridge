@@ -34,6 +34,7 @@ export type DoctorChat = {
   currentCwd: string;
   queued: number;
   pendingBatchCount?: number;
+  activeTurnId?: string;
   activeText?: string;
   binding?: {
     cwd: string;
@@ -210,6 +211,7 @@ function buildChatSection(chat: DoctorChat): DoctorSection {
       ok("当前 cwd", `\`${chat.currentCwd}\``),
       ok("排队消息", String(chat.queued)),
       chat.pendingBatchCount ? ok("正在合并消息", String(chat.pendingBatchCount)) : ok("正在合并消息", "0"),
+      chat.activeTurnId ? warn("当前 Turn ID", chat.activeTurnId) : ok("当前 Turn ID", "无"),
       chat.activeText ? warn("当前任务", chat.activeText) : ok("当前任务", "无"),
       chat.binding ? ok("绑定项目", `${chat.binding.projectName ? `${chat.binding.projectName} -> ` : ""}\`${chat.binding.cwd}\``) : warn("绑定项目", "未绑定"),
     ],

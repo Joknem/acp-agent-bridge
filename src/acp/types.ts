@@ -5,6 +5,7 @@ export type AgentPromptContent = ContentBlock[];
 export type AgentTurn = {
   sessionId: string;
   provider: string;
+  turnId?: string;
   answerMarkdown: string;
   thoughtMarkdown: string;
   toolMarkdown: string;
@@ -22,6 +23,10 @@ export type AcpAgentProvider = {
   args: string[];
 };
 
+export type AgentPromptOptions = {
+  turnId?: string;
+};
+
 export class AgentPromptError extends Error {
   constructor(
     message: string,
@@ -29,6 +34,7 @@ export class AgentPromptError extends Error {
       provider: string;
       cwd: string;
       sessionId: string;
+      turnId?: string;
       recentStderr: string[];
     },
   ) {

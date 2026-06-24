@@ -1,10 +1,11 @@
 import type { AgentManager } from "../acp/AgentManager.js";
-import type { AgentPromptContent, AgentTurn } from "../acp/types.js";
+import { AgentPromptError, type AgentPromptContent, type AgentTurn } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
 import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import { ReplyAdapter } from "../core/ReplyAdapter.js";
+import { createTurnId } from "../core/TurnId.js";
 import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
 import { inferImageMimeType, readWebStreamToBuffer } from "../utils/media.js";
@@ -21,6 +22,9 @@ type GatewayPayload = {
 };
 
 type ActiveTurn = {
+  turnId: string;
+  provider: string;
+  cwd: string;
   startedAt: number;
   text: string;
 };
@@ -299,19 +303,34 @@ export class QqBot {
     const firstMessage = items[0].message;
     const chatId = firstMessage.conversation.chatId;
     const summary = summarizeQqBatch(items);
+    const provider = this.agentManager.currentProvider(chatId);
+    const cwd = this.agentManager.currentCwd(chatId);
+    const turnId = createTurnId("qq");
     const activeTurn: ActiveTurn = {
+      turnId,
+      provider,
+      cwd,
       startedAt: Date.now(),
       text: summary,
     };
     state.activeTurn = activeTurn;
+    this.logger.info("prompting acp agent", {
+      turnId,
+      platform: "qq",
+      chatId,
+      provider,
+      cwd,
+      messages: items.length,
+      text: truncate(summary, 120),
+    });
 
     try {
       const prompt = await this.buildAgentPrompt(items);
-      const turn = await this.agentManager.prompt(chatId, prompt);
+      const turn = await this.agentManager.prompt(chatId, prompt, { turnId });
       await this.sendTurn(firstMessage.conversation, firstMessage.messageId, turn);
     } catch (error: unknown) {
-      this.logger.error("qq agent turn failed", { chatId, message: errorMessage(error), text: truncate(summary, 120) });
-      await this.replies.sendError(replyDestination(firstMessage), errorMessage(error));
+      this.logTurnError(chatId, activeTurn, error);
+      await this.replies.sendMarkdown(replyDestination(firstMessage), this.renderTurnError(error, activeTurn), "执行失败", "error");
     } finally {
       if (state.activeTurn === activeTurn) state.activeTurn = undefined;
     }
@@ -372,6 +391,7 @@ export class QqBot {
     const queueStatus = state.queue.status();
     return [
       state.activeTurn ? `状态：处理中 ${formatDuration(Date.now() - state.activeTurn.startedAt)}` : "状态：空闲",
+      state.activeTurn ? `Turn ID：${state.activeTurn.turnId}` : undefined,
       state.activeTurn ? `正在处理：${truncate(state.activeTurn.text, 80)}` : undefined,
       state.pendingBatcher?.hasPending() ? `正在合并消息：${state.pendingBatcher.pendingCount()}` : undefined,
       `排队消息：${queueStatus.queued}`,
@@ -412,6 +432,49 @@ export class QqBot {
 
   private async sendTurn(conversation: QqConversation, replyToMessageId: string, turn: AgentTurn) {
     await this.replies.sendAgent({ conversation, replyToMessageId }, turn);
+  }
+
+  private logTurnError(chatId: string, activeTurn: ActiveTurn, error: unknown) {
+    if (error instanceof AgentPromptError) {
+      this.logger.error("qq agent turn failed", {
+        chatId,
+        message: error.message,
+        ...error.details,
+        turnId: error.details.turnId ?? activeTurn.turnId,
+      });
+      return;
+    }
+
+    this.logger.error("qq agent turn failed", {
+      chatId,
+      turnId: activeTurn.turnId,
+      provider: activeTurn.provider,
+      cwd: activeTurn.cwd,
+      message: errorMessage(error),
+      text: truncate(activeTurn.text, 120),
+    });
+  }
+
+  private renderTurnError(error: unknown, activeTurn: ActiveTurn) {
+    if (error instanceof AgentPromptError) {
+      const turnId = error.details.turnId ?? activeTurn.turnId;
+      return [
+        `错误：\`${error.message}\``,
+        "",
+        `turn：\`${turnId}\``,
+        `agent：\`${error.details.provider}\``,
+        `cwd：\`${error.details.cwd}\``,
+        `session：\`${error.details.sessionId}\``,
+      ].join("\n");
+    }
+
+    return [
+      `错误：\`${errorMessage(error)}\``,
+      "",
+      `turn：\`${activeTurn.turnId}\``,
+      `agent：\`${activeTurn.provider}\``,
+      `cwd：\`${activeTurn.cwd}\``,
+    ].join("\n");
   }
 
   private async buildAgentPrompt(items: QqPromptItem[]): Promise<AgentPromptContent> {
@@ -563,6 +626,7 @@ export class QqBot {
       currentCwd: this.agentManager.currentCwd(chatId),
       queued: state.queue.status().queued,
       pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
+      activeTurnId: state.activeTurn?.turnId,
       activeText: state.activeTurn ? truncate(state.activeTurn.text, 120) : undefined,
       binding: this.stateStore.getBinding(chatId),
     };
