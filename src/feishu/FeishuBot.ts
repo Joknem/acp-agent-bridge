@@ -4,6 +4,7 @@ import path from "node:path";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
+import { formatDoctorReport, parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import { markdownToLarkCards, shouldUseLarkCard, type LarkCardContent } from "./larkCard.js";
 import { markdownToLarkPost, type LarkPostContent } from "../markdown/larkPost.js";
@@ -126,6 +127,7 @@ export class FeishuBot {
       .register("bind", async (command, context) => this.handleBindCommand(context.chatId, command, context.chatType))
       .register("unbind", async (_command, context) => this.handleUnbindCommand(context.chatId, context.chatType))
       .register("status", async (_command, context) => this.handleStatusCommand(context.chatId, context.chatType))
+      .register("doctor", async (command, context) => this.handleDoctorCommand(context.chatId, command, context.chatType))
       .register("ping", async (_command, context) => this.handlePingCommand(context.chatId))
       .register("cancel", async (_command, context) => this.handleCancelCommand(context.chatId))
       .register("reset", async (_command, context) => this.handleResetCommand(context.chatId));
@@ -718,6 +720,21 @@ export class FeishuBot {
     await this.sendMarkdown(chatId, this.renderStatus(chatId, chatType), "当前配置");
   }
 
+  private async handleDoctorCommand(chatId: string, command: SlashCommand, chatType?: string) {
+    const report = await runDoctor({
+      config: this.config,
+      providers: this.agentManager.listProviders(),
+      state: this.doctorStateStats(),
+      chat: this.doctorChat(chatId, chatType),
+      platform: {
+        feishu: [await this.checkFeishuCredentialItem()],
+      },
+      scope: parseDoctorScope(command.args[0]),
+    });
+
+    await this.sendMarkdown(chatId, formatDoctorReport(report), "Doctor");
+  }
+
   private async handlePingCommand(chatId: string) {
     await this.sendText(chatId, "pong");
   }
@@ -771,6 +788,7 @@ export class FeishuBot {
       "- `/bind`",
       "- `/unbind`",
       "- `/status`",
+      "- `/doctor`",
       "- `/ping`",
       "- `/cancel`",
       "- `/reset`",
@@ -784,6 +802,8 @@ export class FeishuBot {
       "常用命令：",
       "- `/help` 查看帮助",
       "- `/status` 查看当前聊天状态",
+      "- `/doctor` 运行配置和运行时自检",
+      "- `/doctor agent|feishu|qq|state|chat` 只检查指定范围",
       "- `/agent` 查看可用 agent",
       "- `/agent codex` 切换到 Codex",
       "- `/agent kimi` 切换到 Kimi",
@@ -830,6 +850,7 @@ export class FeishuBot {
       "切换目录：`/cwd /absolute/path`",
       "项目别名：`/project`",
       "当前配置：`/status`",
+      "自检：`/doctor`",
       "发送测试：`/ping`",
       "取消任务：`/cancel`",
       "重置会话：`/reset`",
@@ -1204,6 +1225,61 @@ export class FeishuBot {
       ]);
     } finally {
       if (timer) clearTimeout(timer);
+    }
+  }
+
+  private doctorStateStats() {
+    return {
+      projects: this.stateStore.listProjects().length,
+      bindings: this.stateStore.listBindings().length,
+      processedMessages: this.stateStore.processedMessageCount(),
+    };
+  }
+
+  private doctorChat(chatId: string, chatType?: string): DoctorChat {
+    const state = this.getChatState(chatId);
+    return {
+      chatId,
+      chatType,
+      currentProvider: this.agentManager.currentProvider(chatId),
+      currentCwd: this.agentManager.currentCwd(chatId),
+      queued: state.queue.status().queued,
+      pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
+      activeText: state.activeTurn ? truncate(state.activeTurn.text, 120) : undefined,
+      binding: this.stateStore.getBinding(chatId),
+    };
+  }
+
+  private async checkFeishuCredentialItem(): Promise<DoctorItem> {
+    try {
+      const result = await this.withSendTimeout(
+        this.client.auth.tenantAccessToken.internal({
+          data: {
+            app_id: this.config.feishu.appId,
+            app_secret: this.config.feishu.appSecret,
+          },
+        }),
+      );
+
+      if (result.code && result.code !== 0) {
+        return {
+          status: "fail",
+          label: "凭证实时检查",
+          detail: `${result.code} ${result.msg ?? ""}`.trim(),
+        };
+      }
+
+      return {
+        status: "ok",
+        label: "凭证实时检查",
+        detail: "通过",
+      };
+    } catch (error: unknown) {
+      return {
+        status: "fail",
+        label: "凭证实时检查",
+        detail: errorMessage(error),
+      };
     }
   }
 }

@@ -36,6 +36,7 @@ They should not grow generic agent-flow behavior when the behavior can be shared
 - `src/core/ConversationQueue.ts`
 - `src/core/CommandRouter.ts`
 - `src/core/IncomingMessagePipeline.ts`
+- `src/core/Doctor.ts`
 
 This layer is platform-neutral. It is the beginning of a shared pipeline inspired by messaging-adapter architectures:
 
@@ -44,6 +45,7 @@ This layer is platform-neutral. It is the beginning of a shared pipeline inspire
 - `ConversationQueue` serializes ordinary work inside one chat/conversation.
 - `CommandRouter` parses slash commands once and lets adapters register platform-specific command handlers.
 - `IncomingMessagePipeline` coordinates batching, queueing, and batch error handling for ordinary platform messages.
+- `Doctor` runs platform-neutral configuration, state, agent, and chat diagnostics that adapters can expose through commands.
 
 The next good extraction is a shared `ReplyAdapter`, so Feishu and QQ only provide platform-specific ingress, media download, reactions, and send primitives.
 

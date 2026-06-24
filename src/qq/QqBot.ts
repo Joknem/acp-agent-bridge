@@ -2,6 +2,7 @@ import type { AgentManager } from "../acp/AgentManager.js";
 import type { AgentPromptContent, AgentTurn } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
+import { formatDoctorReport, parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
@@ -45,6 +46,7 @@ export class QqBot {
   private heartbeatTimer?: NodeJS.Timeout;
   private reconnectTimer?: NodeJS.Timeout;
   private sequence: number | null = null;
+  private gatewaySessionId?: string;
   private stopped = false;
   private readonly chats = new Map<string, ChatState>();
   private readonly auth: QqAccessTokenProvider;
@@ -78,6 +80,7 @@ export class QqBot {
       .register("status", async (_command, context) =>
         this.sendText(context.message.conversation, context.message.messageId, this.renderStatus(context.message.conversation.chatId, context.state)),
       )
+      .register("doctor", async (command, context) => this.handleDoctorCommand(context.message, context.state, command))
       .register("reset", async (_command, context) => this.handleResetCommand(context.message))
       .register(["agent", "agents"], async (command, context) => this.handleAgentCommand(context.message, command));
   }
@@ -108,6 +111,7 @@ export class QqBot {
     }
     this.heartbeatTimer = undefined;
     this.reconnectTimer = undefined;
+    this.gatewaySessionId = undefined;
     this.ws?.close();
     this.ws = undefined;
   }
@@ -129,6 +133,7 @@ export class QqBot {
 
     this.ws.addEventListener("close", (event) => {
       this.logger.warn("qq gateway websocket closed", { code: event.code, reason: event.reason });
+      this.gatewaySessionId = undefined;
       this.scheduleReconnect();
     });
 
@@ -225,6 +230,7 @@ export class QqBot {
   private async handleDispatch(payload: GatewayPayload) {
     if (payload.t === "READY") {
       const ready = payload.d && typeof payload.d === "object" ? (payload.d as Record<string, unknown>) : {};
+      this.gatewaySessionId = typeof ready.session_id === "string" ? ready.session_id : undefined;
       this.logger.info("qq gateway ready", { sessionId: ready.session_id });
       return;
     }
@@ -330,6 +336,21 @@ export class QqBot {
     await this.sendText(message.conversation, message.messageId, this.renderHelp());
   }
 
+  private async handleDoctorCommand(message: QqIncomingMessage, state: ChatState, command: SlashCommand) {
+    const report = await runDoctor({
+      config: this.config,
+      providers: this.agentManager.listProviders(),
+      state: this.doctorStateStats(),
+      chat: this.doctorChat(message.conversation.chatId, message.conversation.type, state),
+      platform: {
+        qq: this.qqGatewayDoctorItems(),
+      },
+      scope: parseDoctorScope(command.args[0]),
+    });
+
+    await this.sendText(message.conversation, message.messageId, formatDoctorReport(report));
+  }
+
   private async handleUnknownCommand(message: QqIncomingMessage, command: SlashCommand) {
     await this.sendText(message.conversation, message.messageId, `未知命令：${command.token}\n\n${this.renderHelp()}`);
   }
@@ -349,7 +370,7 @@ export class QqBot {
       `消息合并窗口：${this.config.qq.messageMergeWindowMs}ms`,
       `消息去重缓存：${this.stateStore.processedMessageCount()}`,
       "",
-      "命令：/status /agent /agent <name> /reset",
+      "命令：/status /doctor /agent /agent <name> /reset",
     ]
       .filter((line): line is string => Boolean(line))
       .join("\n");
@@ -365,7 +386,17 @@ export class QqBot {
   }
 
   private renderHelp() {
-    return ["命令：", "- /help", "- /status", "- /agent", "- /agent <name>", "- /agent switch <name>", "- /reset"].join("\n");
+    return [
+      "命令：",
+      "- /help",
+      "- /status",
+      "- /doctor",
+      "- /doctor agent|qq|state|chat",
+      "- /agent",
+      "- /agent <name>",
+      "- /agent switch <name>",
+      "- /reset",
+    ].join("\n");
   }
 
   private async sendTurn(conversation: QqConversation, replyToMessageId: string, turn: AgentTurn) {
@@ -501,6 +532,49 @@ export class QqBot {
       authorization: await this.auth.authorization(),
     };
   }
+
+  private doctorStateStats() {
+    return {
+      projects: this.stateStore.listProjects().length,
+      bindings: this.stateStore.listBindings().length,
+      processedMessages: this.stateStore.processedMessageCount(),
+    };
+  }
+
+  private doctorChat(chatId: string, chatType: string, state: ChatState): DoctorChat {
+    return {
+      chatId,
+      chatType,
+      currentProvider: this.agentManager.currentProvider(chatId),
+      currentCwd: this.agentManager.currentCwd(chatId),
+      queued: state.queue.status().queued,
+      pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
+      activeText: state.activeTurn ? truncate(state.activeTurn.text, 120) : undefined,
+      binding: this.stateStore.getBinding(chatId),
+    };
+  }
+
+  private qqGatewayDoctorItems(): DoctorItem[] {
+    if (!this.config.qq.enabled) {
+      return [{ status: "warn", label: "Gateway 实时状态", detail: "QQ adapter 未启用" }];
+    }
+
+    if (!this.ws) {
+      return [{ status: "fail", label: "Gateway 实时状态", detail: "WebSocket 未创建" }];
+    }
+
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      return [{ status: "fail", label: "Gateway 实时状态", detail: websocketStateLabel(this.ws.readyState) }];
+    }
+
+    return [
+      {
+        status: "ok",
+        label: "Gateway 实时状态",
+        detail: this.gatewaySessionId ? `open，session ${this.gatewaySessionId}` : "open，等待 READY",
+      },
+    ];
+  }
 }
 
 function parseGatewayPayload(data: unknown): GatewayPayload | undefined {
@@ -530,6 +604,21 @@ function formatDuration(milliseconds: number) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function websocketStateLabel(state: number) {
+  switch (state) {
+    case WebSocket.CONNECTING:
+      return "connecting";
+    case WebSocket.OPEN:
+      return "open";
+    case WebSocket.CLOSING:
+      return "closing";
+    case WebSocket.CLOSED:
+      return "closed";
+    default:
+      return `unknown(${state})`;
+  }
 }
 
 function isImmediateCommand(message: QqIncomingMessage) {
