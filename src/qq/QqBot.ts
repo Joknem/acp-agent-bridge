@@ -1,6 +1,8 @@
 import type { AgentManager } from "../acp/AgentManager.js";
 import type { AgentPromptContent, AgentTurn } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
+import { ConversationQueue } from "../core/ConversationQueue.js";
+import { MessageBatcher } from "../core/MessageBatcher.js";
 import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
 import { inferImageMimeType, readWebStreamToBuffer } from "../utils/media.js";
@@ -21,16 +23,10 @@ type ActiveTurn = {
   text: string;
 };
 
-type PendingBatch = {
-  items: QqPromptItem[];
-  timer?: NodeJS.Timeout;
-};
-
 type ChatState = {
-  queue: Promise<void>;
-  queuedCount: number;
+  queue: ConversationQueue;
   activeTurn?: ActiveTurn;
-  pendingBatch?: PendingBatch;
+  pendingBatcher?: MessageBatcher<QqPromptItem>;
 };
 
 const OP_DISPATCH = 0;
@@ -74,8 +70,8 @@ export class QqBot {
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     for (const state of this.chats.values()) {
-      if (state.pendingBatch?.timer) clearTimeout(state.pendingBatch.timer);
-      state.pendingBatch = undefined;
+      state.pendingBatcher?.stop();
+      state.pendingBatcher = undefined;
     }
     this.heartbeatTimer = undefined;
     this.reconnectTimer = undefined;
@@ -234,59 +230,35 @@ export class QqBot {
   }
 
   private enqueueMessage(message: QqIncomingMessage, state: ChatState) {
-    state.queuedCount += 1;
-    state.queue = state.queue
-      .catch(() => undefined)
-      .then(async () => {
-        state.queuedCount = Math.max(0, state.queuedCount - 1);
-        await this.processMessage(message, state);
-      });
+    state.queue.enqueue(async () => {
+      await this.processMessage(message, state);
+    });
   }
 
   private scheduleMessageBatch(message: QqIncomingMessage, state: ChatState) {
-    if (!state.pendingBatch) {
-      state.pendingBatch = { items: [] };
-    }
-
-    state.pendingBatch.items.push({ message });
-
-    if (state.pendingBatch.timer) {
-      clearTimeout(state.pendingBatch.timer);
-      state.pendingBatch.timer = undefined;
-    }
-
-    if (this.config.qq.messageMergeWindowMs === 0) {
-      this.flushMessageBatch(message.conversation.chatId);
-      return;
-    }
-
-    state.pendingBatch.timer = setTimeout(() => {
-      this.flushMessageBatch(message.conversation.chatId);
-    }, this.config.qq.messageMergeWindowMs);
+    state.pendingBatcher ??= new MessageBatcher(this.config.qq.messageMergeWindowMs, (items) => {
+      this.enqueueMessageBatch(message.conversation.chatId, items);
+    });
+    state.pendingBatcher.add({ message });
   }
 
   private flushMessageBatch(chatId: string) {
     const state = this.getChatState(chatId);
-    const batch = state.pendingBatch;
-    if (!batch) return;
+    state.pendingBatcher?.flush();
+  }
 
-    if (batch.timer) clearTimeout(batch.timer);
-    state.pendingBatch = undefined;
-
-    const summary = summarizeQqBatch(batch.items);
+  private enqueueMessageBatch(chatId: string, items: QqPromptItem[]) {
+    const state = this.getChatState(chatId);
+    const summary = summarizeQqBatch(items);
     this.logger.info("queued qq message batch", {
       chatId,
-      messages: batch.items.length,
+      messages: items.length,
       text: truncate(summary, 120),
     });
 
-    state.queuedCount += 1;
-    state.queue = state.queue
-      .catch(() => undefined)
-      .then(async () => {
-        state.queuedCount = Math.max(0, state.queuedCount - 1);
-        await this.processMessageBatch(batch.items, state);
-      });
+    state.queue.enqueue(async () => {
+      await this.processMessageBatch(items, state);
+    });
   }
 
   private async processMessage(message: QqIncomingMessage, state: ChatState) {
@@ -354,11 +326,12 @@ export class QqBot {
   private renderStatus(chatId: string, state: ChatState) {
     const currentProvider = this.agentManager.currentProvider(chatId);
     const providerQueue = this.agentManager.providerQueueStatus(currentProvider);
+    const queueStatus = state.queue.status();
     return [
       state.activeTurn ? `状态：处理中 ${formatDuration(Date.now() - state.activeTurn.startedAt)}` : "状态：空闲",
       state.activeTurn ? `正在处理：${truncate(state.activeTurn.text, 80)}` : undefined,
-      state.pendingBatch ? `正在合并消息：${state.pendingBatch.items.length}` : undefined,
-      `排队消息：${state.queuedCount}`,
+      state.pendingBatcher?.hasPending() ? `正在合并消息：${state.pendingBatcher.pendingCount()}` : undefined,
+      `排队消息：${queueStatus.queued}`,
       `当前 agent：${currentProvider}`,
       `当前 agent 全局队列：${providerQueue.active ? "处理中" : "空闲"}，等待 ${providerQueue.queued}`,
       `当前 cwd：${this.agentManager.currentCwd(chatId)}`,
@@ -503,8 +476,7 @@ export class QqBot {
     let state = this.chats.get(chatId);
     if (!state) {
       state = {
-        queue: Promise.resolve(),
-        queuedCount: 0,
+        queue: new ConversationQueue(),
       };
       this.chats.set(chatId, state);
     }

@@ -2,6 +2,8 @@
 
 基于 ACP 协议把编程智能体接入飞书机器人。服务通过飞书长连接接收文本消息，为每个飞书聊天维护当前 agent 和 ACP 会话，并把 agent 的 Markdown 输出转换为飞书 `post` 富文本消息发送回聊天。
 
+架构分层见 [ARCHITECTURE.md](./ARCHITECTURE.md)。当前实现已经抽出平台无关的消息模型、消息合并器和会话队列，后续可以继续把命令路由和平台 adapter 边界抽清楚。
+
 ## Setup
 
 ```bash

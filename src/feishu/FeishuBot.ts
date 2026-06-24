@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
+import { ConversationQueue } from "../core/ConversationQueue.js";
+import { MessageBatcher } from "../core/MessageBatcher.js";
 import { markdownToLarkCards, shouldUseLarkCard, type LarkCardContent } from "./larkCard.js";
 import { markdownToLarkPost, type LarkPostContent } from "../markdown/larkPost.js";
 import { parseIncomingFeishuMessage, type IncomingFeishuMessage } from "./incomingMessage.js";
@@ -46,12 +48,7 @@ type AckState = {
 
 type PendingIncoming = FeishuPromptItem & {
   ackState?: AckState;
-};
-
-type PendingBatch = {
-  items: PendingIncoming[];
   chatType?: string;
-  timer?: NodeJS.Timeout;
 };
 
 type BindingTarget = {
@@ -65,10 +62,9 @@ type ProcessTextOptions = {
 };
 
 type ChatState = {
-  queue: Promise<void>;
-  queuedCount: number;
+  queue: ConversationQueue;
   activeTurn?: ActiveTurn;
-  pendingBatch?: PendingBatch;
+  pendingBatcher?: MessageBatcher<PendingIncoming>;
   lastQueueNoticeAt?: number;
   lastBindNoticeAt?: number;
 };
@@ -210,7 +206,7 @@ export class FeishuBot {
     provider: string,
     state: ChatState,
   ): Promise<AckState | undefined> {
-    if (this.config.ackMode === "message" && state.pendingBatch) {
+    if (this.config.ackMode === "message" && state.pendingBatcher?.hasPending()) {
       return undefined;
     }
 
@@ -219,56 +215,33 @@ export class FeishuBot {
 
   private scheduleIncomingBatch(chatId: string, item: PendingIncoming, chatType?: string) {
     const state = this.getChatState(chatId);
-    if (!state.pendingBatch) {
-      state.pendingBatch = {
-        items: [],
-        chatType,
-      };
-    }
-
-    state.pendingBatch.items.push(item);
-    state.pendingBatch.chatType = chatType ?? state.pendingBatch.chatType;
-
-    if (state.pendingBatch.timer) {
-      clearTimeout(state.pendingBatch.timer);
-      state.pendingBatch.timer = undefined;
-    }
-
-    if (this.config.messageMergeWindowMs === 0) {
-      this.flushIncomingBatch(chatId);
-      return;
-    }
-
-    state.pendingBatch.timer = setTimeout(() => {
-      this.flushIncomingBatch(chatId);
-    }, this.config.messageMergeWindowMs);
+    state.pendingBatcher ??= new MessageBatcher(this.config.messageMergeWindowMs, (items) => {
+      this.enqueueIncomingBatch(chatId, items);
+    });
+    state.pendingBatcher.add({ ...item, chatType });
   }
 
   private flushIncomingBatch(chatId: string) {
     const state = this.getChatState(chatId);
-    const batch = state.pendingBatch;
-    if (!batch) return;
+    state.pendingBatcher?.flush();
+  }
 
-    if (batch.timer) clearTimeout(batch.timer);
-    state.pendingBatch = undefined;
-
-    const summary = summarizeIncomingBatch(batch.items);
+  private enqueueIncomingBatch(chatId: string, items: PendingIncoming[]) {
+    const state = this.getChatState(chatId);
+    const chatType = lastDefined(items.map((item) => item.chatType));
+    const summary = summarizeIncomingBatch(items);
     this.logger.info("queued feishu message batch", {
       chatId,
-      messages: batch.items.length,
+      messages: items.length,
       text: truncate(summary, 120),
     });
 
-    state.queuedCount += 1;
-    state.queue = state.queue
-      .catch(() => undefined)
-      .then(async () => {
-        state.queuedCount = Math.max(0, state.queuedCount - 1);
-        await this.processIncomingBatch(chatId, batch.items, {
-          ackStates: batch.items.flatMap((pending) => (pending.ackState ? [pending.ackState] : [])),
-          chatType: batch.chatType,
-        });
+    state.queue.enqueue(async () => {
+      await this.processIncomingBatch(chatId, items, {
+        ackStates: items.flatMap((pending) => (pending.ackState ? [pending.ackState] : [])),
+        chatType,
       });
+    });
   }
 
   private async processIncoming(
@@ -781,13 +754,14 @@ export class FeishuBot {
     const bindings = this.stateStore.listBindings();
     const binding = this.stateStore.getBinding(chatId);
     const state = this.getChatState(chatId);
+    const queueStatus = state.queue.status();
     const activeTurn = state.activeTurn;
 
     return [
       activeTurn ? `状态：\`处理中 ${formatDuration(Date.now() - activeTurn.startedAt)}\`` : "状态：`空闲`",
       activeTurn ? `正在处理：\`${truncate(activeTurn.text, 80)}\`` : undefined,
-      state.pendingBatch ? `正在合并消息：\`${state.pendingBatch.items.length}\`` : undefined,
-      `排队消息：\`${state.queuedCount}\``,
+      state.pendingBatcher?.hasPending() ? `正在合并消息：\`${state.pendingBatcher.pendingCount()}\`` : undefined,
+      `排队消息：\`${queueStatus.queued}\``,
       `当前 agent 全局队列：\`${providerQueue.active ? "处理中" : "空闲"}，等待 ${providerQueue.queued}\``,
       chatType ? `聊天类型：\`${chatType}\`` : undefined,
       isGroupChat(chatType) ? `群聊绑定：${binding ? "`已绑定`" : "`未绑定`"}` : undefined,
@@ -1149,7 +1123,7 @@ export class FeishuBot {
   private getChatState(chatId: string) {
     let state = this.chats.get(chatId);
     if (!state) {
-      state = { queue: Promise.resolve(), queuedCount: 0 };
+      state = { queue: new ConversationQueue() };
       this.chats.set(chatId, state);
     }
 
@@ -1182,7 +1156,7 @@ export class FeishuBot {
   }
 
   private async maybeNotifyQueuedMessage(chatId: string, text: string, state: ChatState) {
-    if (!state.activeTurn && state.queuedCount === 0) return;
+    if (!state.activeTurn && state.queue.status().queued === 0) return;
 
     const now = Date.now();
     if (!state.lastQueueNoticeAt || now - state.lastQueueNoticeAt >= QUEUE_NOTICE_COOLDOWN_MS) {
@@ -1297,6 +1271,13 @@ function mapLogLevel(level: AppConfig["logLevel"]) {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function lastDefined<T>(items: readonly (T | undefined)[]) {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (items[index] !== undefined) return items[index];
+  }
+  return undefined;
 }
 
 function permissionSuggestion(message: string) {
