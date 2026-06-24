@@ -2,11 +2,18 @@ import type { AgentManager } from "../acp/AgentManager.js";
 import { AgentPromptError, type AgentPromptContent, type AgentTurn } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
+import {
+  renderAgentList,
+  renderAgentUsage,
+  renderHelp,
+  renderStatus,
+  renderUnknownCommand,
+} from "../core/CommandRenderers.js";
 import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import { ReplyAdapter } from "../core/ReplyAdapter.js";
 import { createTurnId } from "../core/TurnId.js";
-import { createTurnFailure, renderFailureSummary, type TurnFailure } from "../core/TurnFailure.js";
+import { createTurnFailure, type TurnFailure } from "../core/TurnFailure.js";
 import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
 import { inferImageMimeType, readWebStreamToBuffer } from "../utils/media.js";
@@ -95,7 +102,12 @@ export class QqBot {
     return new CommandRouter<QqCommandContext>()
       .register("help", async (_command, context) => this.handleHelpCommand(context.message))
       .register("status", async (_command, context) =>
-        this.sendCommandReply(context.message, this.renderStatus(context.message.conversation.chatId, context.state), "当前配置", "status"),
+        this.sendCommandReply(
+          context.message,
+          this.renderStatus(context.message.conversation.chatId, context.state, context.message.conversation.type),
+          "当前配置",
+          "status",
+        ),
       )
       .register("doctor", async (command, context) => this.handleDoctorCommand(context.message, context.state, command))
       .register("reset", async (_command, context) => this.handleResetCommand(context.message))
@@ -356,6 +368,11 @@ export class QqBot {
   private async handleAgentCommand(message: QqIncomingMessage, command: SlashCommand) {
     const rawAction = command.args[0]?.toLowerCase();
     const rawName = rawAction === "switch" ? command.args[1] : command.args[0];
+    if (rawAction === "switch" && !rawName) {
+      await this.sendCommandReply(message, renderAgentUsage("plain"), "Agent 用法");
+      return;
+    }
+
     if (!rawName) {
       await this.sendCommandReply(message, this.renderAgentList(message.conversation.chatId), "Agent 列表");
       return;
@@ -390,56 +407,55 @@ export class QqBot {
   }
 
   private async handleUnknownCommand(message: QqIncomingMessage, command: SlashCommand) {
-    await this.sendCommandReply(message, `未知命令：${command.token}\n\n${this.renderHelp()}`, "未知命令");
+    await this.sendCommandReply(message, renderUnknownCommand(command.token, { mode: "plain", platform: "qq" }), "未知命令");
   }
 
-  private renderStatus(chatId: string, state: ChatState) {
+  private renderStatus(chatId: string, state: ChatState, chatType: string) {
     const currentProvider = this.agentManager.currentProvider(chatId);
     const sessionInfo = this.agentManager.currentSessionInfo(chatId);
+    const currentAgent = this.agentManager.listProviders().find((provider) => provider.name === currentProvider);
     const providerQueue = this.agentManager.providerQueueStatus(currentProvider);
     const queueStatus = state.queue.status();
-    return [
-      state.activeTurn ? `状态：处理中 ${formatDuration(Date.now() - state.activeTurn.startedAt)}` : "状态：空闲",
-      state.activeTurn ? `Turn ID：${state.activeTurn.turnId}` : undefined,
-      state.activeTurn ? `正在处理：${truncate(state.activeTurn.text, 80)}` : undefined,
-      state.pendingBatcher?.hasPending() ? `正在合并消息：${state.pendingBatcher.pendingCount()}` : undefined,
-      `排队消息：${queueStatus.queued}`,
-      `当前 agent：${currentProvider}`,
-      `当前 agent 全局队列：${providerQueue.active ? "处理中" : "空闲"}，等待 ${providerQueue.queued}`,
-      `当前 cwd：${this.agentManager.currentCwd(chatId)}`,
-      sessionInfo.sessionId ? `当前 session：${sessionInfo.sessionId}` : "当前 session：未创建",
-      sessionInfo.sessionId ? `session 状态：${renderSessionStatus(sessionInfo.source, sessionInfo.persisted)}` : undefined,
-      state.lastFailure ? renderFailureSummary(state.lastFailure) : undefined,
-      `消息合并窗口：${this.config.qq.messageMergeWindowMs}ms`,
-      `消息去重缓存：${this.stateStore.processedMessageCount()}`,
-      "",
-      "命令：/status /doctor /agent /agent <name> /reset",
-    ]
-      .filter((line): line is string => Boolean(line))
-      .join("\n");
+
+    return renderStatus({
+      mode: "plain",
+      activeTurn: state.activeTurn,
+      pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
+      conversationQueue: { queued: queueStatus.queued },
+      providerQueue,
+      chatType,
+      currentProvider,
+      currentCwd: this.agentManager.currentCwd(chatId),
+      session: sessionInfo,
+      lastFailure: state.lastFailure,
+      currentAgentCommand: currentAgent ? [currentAgent.command, ...currentAgent.args].join(" ") : undefined,
+      defaultAgent: this.config.acp.defaultAgent,
+      acpTimeoutMs: this.config.acp.promptTimeoutMs,
+      messageMergeWindowMs: this.config.qq.messageMergeWindowMs,
+      chatSessionCount: this.stateStore.chatSessionCount(),
+      processedMessageCount: this.stateStore.processedMessageCount(),
+      commands: ["/help", "/status", "/doctor", "/agent", "/agent <name>", "/reset"],
+    });
   }
 
   private renderAgentList(chatId: string) {
-    const current = this.agentManager.currentProvider(chatId);
-    const lines = this.agentManager.listProviders().map((provider) => {
-      const suffix = provider.name === current ? " (current)" : provider.isDefault ? " (default)" : "";
-      return `- ${provider.name}${suffix}: ${[provider.command, ...provider.args].join(" ")}`;
+    return renderAgentList({
+      mode: "plain",
+      currentProvider: this.agentManager.currentProvider(chatId),
+      currentCwd: this.agentManager.currentCwd(chatId),
+      providers: this.agentManager.listProviders(),
+      shortcuts: [
+        { label: "帮助", command: "/help" },
+        { label: "切换 agent", command: "/agent <name>" },
+        { label: "当前配置", command: "/status" },
+        { label: "自检", command: "/doctor" },
+        { label: "重置会话", command: "/reset" },
+      ],
     });
-    return [`当前 agent：${current}`, "", "可用 agent：", ...lines].join("\n");
   }
 
   private renderHelp() {
-    return [
-      "命令：",
-      "- /help",
-      "- /status",
-      "- /doctor",
-      "- /doctor agent|qq|state|chat",
-      "- /agent",
-      "- /agent <name>",
-      "- /agent switch <name>",
-      "- /reset",
-    ].join("\n");
+    return renderHelp({ mode: "plain", platform: "qq" });
   }
 
   private async sendTurn(conversation: QqConversation, replyToMessageId: string, turn: AgentTurn) {
@@ -695,17 +711,6 @@ function heartbeatIntervalMs(data: unknown) {
   if (!data || typeof data !== "object") return undefined;
   const value = (data as Record<string, unknown>).heartbeat_interval;
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
-}
-
-function formatDuration(milliseconds: number) {
-  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return minutes ? `${minutes}m${seconds.toString().padStart(2, "0")}s` : `${seconds}s`;
-}
-
-function renderSessionStatus(source: string | undefined, persisted: boolean) {
-  return [...new Set([source ?? "unknown", persisted ? "persisted" : undefined].filter(Boolean))].join(", ");
 }
 
 function renderCancelStatus(status: string) {

@@ -4,11 +4,18 @@ import path from "node:path";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
+import {
+  renderAgentList,
+  renderAgentUsage,
+  renderHelp,
+  renderStatus,
+  renderUnknownCommand,
+} from "../core/CommandRenderers.js";
 import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import { ReplyAdapter } from "../core/ReplyAdapter.js";
 import { createTurnId } from "../core/TurnId.js";
-import { createTurnFailure, renderFailureSummary, type TurnFailure } from "../core/TurnFailure.js";
+import { createTurnFailure, type TurnFailure } from "../core/TurnFailure.js";
 import { markdownToLarkCards, shouldUseLarkCard, type LarkCardContent } from "./larkCard.js";
 import { markdownToLarkPost, type LarkPostContent } from "../markdown/larkPost.js";
 import { parseIncomingFeishuMessage, type IncomingFeishuMessage } from "./incomingMessage.js";
@@ -404,7 +411,7 @@ export class FeishuBot {
 
     const target = action === "switch" ? name : action;
     if (!target) {
-      await this.sendMarkdown(chatId, "用法：`/agent <name>` 或 `/agent switch <name>`");
+      await this.sendMarkdown(chatId, renderAgentUsage("markdown"));
       return;
     }
 
@@ -638,7 +645,7 @@ export class FeishuBot {
   }
 
   private async handleUnknownCommand(chatId: string, command: SlashCommand) {
-    await this.sendMarkdown(chatId, `未知命令：\`${command.token}\`\n\n${this.renderHelp()}`, "未知命令");
+    await this.sendMarkdown(chatId, renderUnknownCommand(command.token, { mode: "markdown", platform: "feishu" }), "未知命令");
   }
 
   private renderProjectList() {
@@ -778,117 +785,70 @@ export class FeishuBot {
     const binding = this.stateStore.getBinding(chatId);
     const state = this.getChatState(chatId);
     const queueStatus = state.queue.status();
-    const activeTurn = state.activeTurn;
 
-    return [
-      activeTurn ? `状态：\`处理中 ${formatDuration(Date.now() - activeTurn.startedAt)}\`` : "状态：`空闲`",
-      activeTurn ? `Turn ID：\`${activeTurn.turnId}\`` : undefined,
-      activeTurn ? `正在处理：\`${truncate(activeTurn.text, 80)}\`` : undefined,
-      state.pendingBatcher?.hasPending() ? `正在合并消息：\`${state.pendingBatcher.pendingCount()}\`` : undefined,
-      `排队消息：\`${queueStatus.queued}\``,
-      `当前 agent 全局队列：\`${providerQueue.active ? "处理中" : "空闲"}，等待 ${providerQueue.queued}\``,
-      chatType ? `聊天类型：\`${chatType}\`` : undefined,
-      isGroupChat(chatType) ? `群聊绑定：${binding ? "`已绑定`" : "`未绑定`"}` : undefined,
-      binding ? `绑定 cwd：\`${binding.cwd}\`` : undefined,
-      binding?.projectName ? `绑定项目：\`${binding.projectName}\`` : undefined,
-      `当前 agent：\`${currentProvider}\``,
-      `当前 cwd：\`${currentCwd}\``,
-      sessionInfo.sessionId ? `当前 session：\`${sessionInfo.sessionId}\`` : "当前 session：`未创建`",
-      sessionInfo.sessionId ? `session 状态：\`${renderSessionStatus(sessionInfo.source, sessionInfo.persisted)}\`` : undefined,
-      state.lastFailure ? renderStatusFailure(state.lastFailure) : undefined,
-      currentAgent ? `agent 命令：\`${[currentAgent.command, ...currentAgent.args].join(" ")}\`` : undefined,
-      `默认 agent：\`${this.config.acp.defaultAgent}\``,
-      `ACP 超时：\`${this.config.acp.promptTimeoutMs}ms\``,
-      `消息合并窗口：\`${this.config.messageMergeWindowMs}ms\``,
-      `ACK 模式：\`${this.config.ackMode}\``,
-      this.config.ackMode === "reaction" ? `处理中 reaction：\`${this.config.processingReaction}\`` : undefined,
-      this.config.doneReaction ? `完成 reaction：\`${this.config.doneReaction}\`` : undefined,
-      this.config.errorReaction ? `失败 reaction：\`${this.config.errorReaction}\`` : undefined,
-      `发送超时：\`${this.config.sendTimeoutMs}ms\``,
-      `debug：\`${this.config.debug}\``,
-      `thinking/tool：\`${this.config.showThinkingTool}\``,
-      `日志级别：\`${this.config.logLevel}\``,
-      `状态文件：\`${this.config.stateFile}\``,
-      `项目别名数：\`${projects.length}\``,
-      `群聊绑定数：\`${bindings.length}\``,
-      `持久化 session：\`${this.stateStore.chatSessionCount()}\``,
-      `消息去重缓存：\`${this.stateStore.processedMessageCount()}\``,
-      "",
-      "常用命令：",
-      "- `/help`",
-      "- `/agent`",
-      "- `/cwd`",
-      "- `/project`",
-      "- `/bind`",
-      "- `/unbind`",
-      "- `/status`",
-      "- `/doctor`",
-      "- `/ping`",
-      "- `/cancel`",
-      "- `/reset`",
-    ]
-      .filter((line): line is string => Boolean(line))
-      .join("\n");
+    return renderStatus({
+      mode: "markdown",
+      activeTurn: state.activeTurn,
+      pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
+      conversationQueue: { queued: queueStatus.queued },
+      providerQueue,
+      chatType,
+      groupBinding: {
+        applicable: isGroupChat(chatType),
+        bound: Boolean(binding),
+        cwd: binding?.cwd,
+        projectName: binding?.projectName,
+      },
+      currentProvider,
+      currentCwd,
+      session: sessionInfo,
+      lastFailure: state.lastFailure,
+      currentAgentCommand: currentAgent ? [currentAgent.command, ...currentAgent.args].join(" ") : undefined,
+      defaultAgent: this.config.acp.defaultAgent,
+      acpTimeoutMs: this.config.acp.promptTimeoutMs,
+      messageMergeWindowMs: this.config.messageMergeWindowMs,
+      ack: {
+        mode: this.config.ackMode,
+        processingReaction: this.config.processingReaction,
+        doneReaction: this.config.doneReaction,
+        errorReaction: this.config.errorReaction,
+      },
+      sendTimeoutMs: this.config.sendTimeoutMs,
+      debug: this.config.debug,
+      showThinkingTool: this.config.showThinkingTool,
+      logLevel: this.config.logLevel,
+      stateFile: this.config.stateFile,
+      projectCount: projects.length,
+      bindingCount: bindings.length,
+      chatSessionCount: this.stateStore.chatSessionCount(),
+      processedMessageCount: this.stateStore.processedMessageCount(),
+      commands: ["/help", "/agent", "/cwd", "/project", "/bind", "/unbind", "/status", "/doctor", "/ping", "/cancel", "/reset"],
+    });
   }
 
   private renderHelp() {
-    return [
-      "常用命令：",
-      "- `/help` 查看帮助",
-      "- `/status` 查看当前聊天状态",
-      "- `/doctor` 运行配置和运行时自检",
-      "- `/doctor agent|feishu|qq|state|chat` 只检查指定范围",
-      "- `/agent` 查看可用 agent",
-      "- `/agent codex` 切换到 Codex",
-      "- `/agent kimi` 切换到 Kimi",
-      "- `/cwd` 查看当前工作目录",
-      "- `/cwd /absolute/path` 切换当前聊天工作目录",
-      "- `/project` 查看项目别名",
-      "- `/project add <name> [path]` 保存项目别名",
-      "- `/project <name>` 切换到项目别名",
-      "- `/bind <path-or-project>` 绑定群聊项目",
-      "- `/bind new <name> [absolute-path]` 创建新项目并绑定群聊",
-      "- `/unbind` 移除群聊项目绑定",
-      "- `/cancel` 取消当前任务",
-      "- `/reset` 重置当前 agent session",
-      "- `/ping` 测试飞书收发链路",
-      "",
-      "提示：控制命令会立即执行。普通消息会按当前聊天串行处理；未绑定群聊会先提示 `/bind`。",
-    ].join("\n");
+    return renderHelp({ mode: "markdown", platform: "feishu" });
   }
 
 
   private renderAgentList(chatId: string) {
-    const current = this.agentManager.currentProvider(chatId);
-    const lines = this.agentManager.listProviders().map((provider) => {
-      const marks = [
-        provider.name === current ? "current" : undefined,
-        provider.isDefault ? "default" : undefined,
-        provider.isRunning ? "running" : undefined,
-      ]
-        .filter(Boolean)
-        .join(", ");
-      const suffix = marks ? ` (${marks})` : "";
-      return `- \`${provider.name}\`${suffix}: \`${[provider.command, ...provider.args].join(" ")}\``;
+    return renderAgentList({
+      mode: "markdown",
+      currentProvider: this.agentManager.currentProvider(chatId),
+      currentCwd: this.agentManager.currentCwd(chatId),
+      providers: this.agentManager.listProviders(),
+      shortcuts: [
+        { label: "帮助", command: "/help" },
+        { label: "切换 agent", command: "/agent <name>" },
+        { label: "切换目录", command: "/cwd /absolute/path" },
+        { label: "项目别名", command: "/project" },
+        { label: "当前配置", command: "/status" },
+        { label: "自检", command: "/doctor" },
+        { label: "发送测试", command: "/ping" },
+        { label: "取消任务", command: "/cancel" },
+        { label: "重置会话", command: "/reset" },
+      ],
     });
-
-    return [
-      `当前 agent：\`${current}\``,
-      `当前 cwd：\`${this.agentManager.currentCwd(chatId)}\``,
-      "",
-      "可用 agent：",
-      ...lines,
-      "",
-      "帮助：`/help`",
-      "切换 agent：`/agent <name>`",
-      "切换目录：`/cwd /absolute/path`",
-      "项目别名：`/project`",
-      "当前配置：`/status`",
-      "自检：`/doctor`",
-      "发送测试：`/ping`",
-      "取消任务：`/cancel`",
-      "重置会话：`/reset`",
-    ].join("\n");
   }
 
   private async sendTurn(chatId: string, turn: AgentTurn) {
@@ -1450,24 +1410,6 @@ function permissionSuggestion(message: string) {
     "- `/agent` 查看并切换 agent",
     "- `/status` 查看当前配置",
   ].join("\n");
-}
-
-function formatDuration(milliseconds: number) {
-  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return minutes ? `${minutes}m${seconds.toString().padStart(2, "0")}s` : `${seconds}s`;
-}
-
-function renderSessionStatus(source: string | undefined, persisted: boolean) {
-  return [...new Set([source ?? "unknown", persisted ? "persisted" : undefined].filter(Boolean))].join(", ");
-}
-
-function renderStatusFailure(failure: TurnFailure) {
-  return renderFailureSummary(failure)
-    .split("\n")
-    .map((line) => `\`${line}\``)
-    .join("\n");
 }
 
 function renderCancelStatus(status: string) {
