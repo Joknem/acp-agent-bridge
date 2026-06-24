@@ -6,6 +6,7 @@ import {
   renderAgentList,
   renderAgentUsage,
   renderHelp,
+  renderQueue,
   renderStatus,
   renderUnknownCommand,
 } from "../core/CommandRenderers.js";
@@ -109,6 +110,7 @@ export class QqBot {
           "status",
         ),
       )
+      .register("queue", async (_command, context) => this.handleQueueCommand(context.message, context.state))
       .register("doctor", async (command, context) => this.handleDoctorCommand(context.message, context.state, command))
       .register("reset", async (_command, context) => this.handleResetCommand(context.message))
       .register(["agent", "agents"], async (command, context) => this.handleAgentCommand(context.message, command));
@@ -289,13 +291,25 @@ export class QqBot {
 
     const state = this.getChatState(message.conversation.chatId);
     if (isImmediateCommand(message)) {
-      this.incomingPipeline.enqueueImmediate(message.conversation.chatId, state, async () => {
-        await this.processMessage(message, state);
-      });
+      await this.processImmediateMessage(message, state);
       return;
     }
 
     this.incomingPipeline.schedule(message.conversation.chatId, state, { message });
+  }
+
+  private async processImmediateMessage(message: QqIncomingMessage, state: ChatState) {
+    this.incomingPipeline.flush(state);
+    try {
+      await this.processMessage(message, state);
+    } catch (error: unknown) {
+      this.logger.error("failed to handle qq command", {
+        chatId: message.conversation.chatId,
+        messageId: message.messageId,
+        message: errorMessage(error),
+      });
+      await this.sendCommandReply(message, `错误：${errorMessage(error)}`, "执行失败", "error");
+    }
   }
 
   private async processMessage(message: QqIncomingMessage, state: ChatState) {
@@ -340,7 +354,7 @@ export class QqBot {
 
     try {
       const prompt = await this.buildAgentPrompt(items);
-      const turn = await this.agentManager.prompt(chatId, prompt, { turnId });
+      const turn = await this.agentManager.prompt(chatId, prompt, { turnId, queueSummary: summary });
       await this.sendTurn(firstMessage.conversation, firstMessage.messageId, turn);
     } catch (error: unknown) {
       state.lastFailure = createTurnFailure(error, {
@@ -391,6 +405,10 @@ export class QqBot {
     await this.sendCommandReply(message, this.renderHelp(), "帮助", "help");
   }
 
+  private async handleQueueCommand(message: QqIncomingMessage, state: ChatState) {
+    await this.sendCommandReply(message, this.renderQueue(message.conversation.chatId, state), "队列状态", "queue");
+  }
+
   private async handleDoctorCommand(message: QqIncomingMessage, state: ChatState, command: SlashCommand) {
     const report = await runDoctor({
       config: this.config,
@@ -422,7 +440,7 @@ export class QqBot {
       activeTurn: state.activeTurn,
       pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
       conversationQueue: { queued: queueStatus.queued },
-      providerQueue,
+      providerQueue: { active: Boolean(providerQueue.active), queued: providerQueue.queued },
       chatType,
       currentProvider,
       currentCwd: this.agentManager.currentCwd(chatId),
@@ -434,7 +452,23 @@ export class QqBot {
       messageMergeWindowMs: this.config.qq.messageMergeWindowMs,
       chatSessionCount: this.stateStore.chatSessionCount(),
       processedMessageCount: this.stateStore.processedMessageCount(),
-      commands: ["/help", "/status", "/doctor", "/agent", "/agent <name>", "/reset"],
+      commands: ["/help", "/status", "/queue", "/doctor", "/agent", "/agent <name>", "/reset"],
+    });
+  }
+
+  private renderQueue(chatId: string, state: ChatState) {
+    const currentProvider = this.agentManager.currentProvider(chatId);
+    return renderQueue({
+      mode: "plain",
+      visibleOwner: chatId,
+      currentProvider,
+      activeTurn: state.activeTurn,
+      pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
+      conversationQueue: state.queue.status(),
+      providerQueues: this.agentManager.listProviders().map((provider) => ({
+        provider: provider.name,
+        queue: this.agentManager.providerQueueStatus(provider.name),
+      })),
     });
   }
 
@@ -448,6 +482,7 @@ export class QqBot {
         { label: "帮助", command: "/help" },
         { label: "切换 agent", command: "/agent <name>" },
         { label: "当前配置", command: "/status" },
+        { label: "队列状态", command: "/queue" },
         { label: "自检", command: "/doctor" },
         { label: "重置会话", command: "/reset" },
       ],
@@ -576,7 +611,12 @@ export class QqBot {
     }
   }
 
-  private async sendCommandReply(message: QqIncomingMessage, markdown: string, title?: string, kind: "help" | "status" | "plain" = "plain") {
+  private async sendCommandReply(
+    message: QqIncomingMessage,
+    markdown: string,
+    title?: string,
+    kind: "error" | "help" | "queue" | "status" | "plain" = "plain",
+  ) {
     await this.replies.sendMarkdown(replyDestination(message), markdown, title, kind);
   }
 

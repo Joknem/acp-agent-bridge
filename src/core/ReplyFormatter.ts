@@ -1,7 +1,7 @@
 import type { AgentTurn } from "../acp/types.js";
 import { formatDoctorReport, type DoctorReport } from "./Doctor.js";
 
-export type ReplyKind = "agent" | "debug" | "doctor" | "error" | "help" | "status" | "plain";
+export type ReplyKind = "agent" | "debug" | "doctor" | "error" | "help" | "queue" | "status" | "plain";
 
 export type FormattedReply = {
   kind: ReplyKind;

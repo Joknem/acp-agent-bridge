@@ -1,5 +1,6 @@
 import type { AcpAgentProvider, AgentSessionInfo } from "../acp/types.js";
 import { truncate } from "../utils/text.js";
+import type { QueueStatusSnapshot, QueueTaskSnapshot } from "./QueueSnapshot.js";
 import { renderFailureSummary, type TurnFailure } from "./TurnFailure.js";
 
 export type CommandRenderMode = "markdown" | "plain";
@@ -79,9 +80,26 @@ export type RenderStatusOptions = {
   commands: string[];
 };
 
+export type RenderQueueOptions = {
+  mode: CommandRenderMode;
+  now?: number;
+  visibleOwner?: string;
+  currentProvider: string;
+  activeTurn?: CommandActiveTurn;
+  pendingBatchCount?: number;
+  conversationQueue: QueueStatusSnapshot;
+  providerQueues: ProviderQueueView[];
+};
+
+export type ProviderQueueView = {
+  provider: string;
+  queue: QueueStatusSnapshot;
+};
+
 const FEISHU_HELP: AgentShortcut[] = [
   { command: "/help", label: "查看帮助" },
   { command: "/status", label: "查看当前聊天状态" },
+  { command: "/queue", label: "查看当前聊天和 agent 全局队列" },
   { command: "/doctor", label: "运行配置和运行时自检" },
   { command: "/doctor agent|feishu|qq|state|chat", label: "只检查指定范围" },
   { command: "/agent", label: "查看可用 agent" },
@@ -103,6 +121,7 @@ const FEISHU_HELP: AgentShortcut[] = [
 const QQ_HELP: AgentShortcut[] = [
   { command: "/help", label: "查看帮助" },
   { command: "/status", label: "查看当前聊天状态" },
+  { command: "/queue", label: "查看当前聊天和 agent 全局队列" },
   { command: "/doctor", label: "运行配置和运行时自检" },
   { command: "/doctor agent|qq|state|chat", label: "只检查指定范围" },
   { command: "/agent", label: "查看可用 agent" },
@@ -207,6 +226,32 @@ export function renderStatus(options: RenderStatusOptions) {
     .join("\n");
 }
 
+export function renderQueue(options: RenderQueueOptions) {
+  const now = options.now ?? Date.now();
+  const activeTurn = options.activeTurn;
+  const providerLines = options.providerQueues.flatMap((provider) =>
+    renderProviderQueue(provider, options.currentProvider, options.mode, now, options.visibleOwner),
+  );
+
+  return [
+    "当前聊天队列：",
+    activeTurn
+      ? `- active turn：${code(activeTurn.turnId, options.mode)} ${code(formatDuration(now - activeTurn.startedAt), options.mode)} ${code(truncate(activeTurn.text, 80), options.mode)}`
+      : "- active turn：无",
+    options.pendingBatchCount && options.pendingBatchCount > 0
+      ? `- 正在合并消息：${code(String(options.pendingBatchCount), options.mode)}`
+      : "- 正在合并消息：无",
+    `- 会话队列 active：${options.conversationQueue.active ? renderQueueTask(options.conversationQueue.active, options.mode, now, options.visibleOwner) : "无"}`,
+    `- 会话队列等待：${code(String(options.conversationQueue.queued), options.mode)}`,
+    ...renderPendingTasks(options.conversationQueue.pending, options.mode, now, options.visibleOwner),
+    "",
+    "Agent 全局队列：",
+    ...providerLines,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
 function renderStatusFailure(failure: TurnFailure, mode: CommandRenderMode, now: number) {
   const summary = renderFailureSummary(failure, now);
   if (mode === "plain") return summary;
@@ -225,6 +270,29 @@ function formatDuration(milliseconds: number) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return minutes ? `${minutes}m${seconds.toString().padStart(2, "0")}s` : `${seconds}s`;
+}
+
+function renderProviderQueue(provider: ProviderQueueView, currentProvider: string, mode: CommandRenderMode, now: number, visibleOwner?: string) {
+  const current = provider.provider === currentProvider ? " current" : "";
+  return [
+    `- ${code(provider.provider, mode)}${current}：${provider.queue.active ? `active ${renderQueueTask(provider.queue.active, mode, now, visibleOwner)}` : "active 无"}，等待 ${code(String(provider.queue.queued), mode)}`,
+    ...renderPendingTasks(provider.queue.pending, mode, now, visibleOwner, "  "),
+  ];
+}
+
+function renderPendingTasks(tasks: QueueTaskSnapshot[], mode: CommandRenderMode, now: number, visibleOwner?: string, prefix = "  ") {
+  if (!tasks.length) return [];
+  return tasks.slice(0, 5).map((task, index) => `${prefix}${index + 1}. ${renderQueueTask(task, mode, now, visibleOwner)}`);
+}
+
+function renderQueueTask(task: QueueTaskSnapshot, mode: CommandRenderMode, now: number, visibleOwner?: string) {
+  const age = formatDuration(now - task.enqueuedAt);
+  const running = task.startedAt ? ` running ${formatDuration(now - task.startedAt)}` : "";
+  const isOtherOwner = Boolean(visibleOwner && task.owner && task.owner !== visibleOwner);
+  const id = isOtherOwner ? "other-chat" : task.id;
+  const owner = isOtherOwner ? " other chat" : "";
+  const summary = !isOtherOwner && task.summary ? ` ${truncate(task.summary, 80)}` : "";
+  return `${code(id, mode)} ${task.label}${owner} queued ${age}${running}${summary ? ` ${code(summary.trim(), mode)}` : ""}`;
 }
 
 function renderMarkdownAwareLine(line: string, mode: CommandRenderMode) {

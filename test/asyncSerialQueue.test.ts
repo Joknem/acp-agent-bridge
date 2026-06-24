@@ -14,23 +14,33 @@ const first = queue.run(
         resolve("first");
       };
     }),
+  { id: "first", label: "First", summary: "one" },
 );
 
 const second = queue.run(async () => {
   events.push("start:second");
   return "second";
-});
+}, { id: "second", label: "Second", summary: "two" });
 
-assert.deepEqual(queue.status(), { active: false, queued: 2 });
+let status = queue.status();
+assert.equal(status.active, undefined);
+assert.equal(status.queued, 2);
+assert.deepEqual(status.pending.map((task) => task.id), ["first", "second"]);
 await new Promise((resolve) => setImmediate(resolve));
-assert.deepEqual(queue.status(), { active: true, queued: 1 });
+status = queue.status();
+assert.equal(status.active?.id, "first");
+assert.equal(status.active?.label, "First");
+assert.equal(status.queued, 1);
 assert.deepEqual(events, ["start:first"]);
 
 releaseFirst?.();
 assert.equal(await first, "first");
 assert.equal(await second, "second");
 assert.deepEqual(events, ["start:first", "finish:first", "start:second"]);
-assert.deepEqual(queue.status(), { active: false, queued: 0 });
+status = queue.status();
+assert.equal(status.active, undefined);
+assert.equal(status.queued, 0);
+assert.deepEqual(status.pending, []);
 
 await assert.rejects(
   queue.run(async () => {

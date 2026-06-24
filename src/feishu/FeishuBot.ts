@@ -8,6 +8,7 @@ import {
   renderAgentList,
   renderAgentUsage,
   renderHelp,
+  renderQueue,
   renderStatus,
   renderUnknownCommand,
 } from "../core/CommandRenderers.js";
@@ -152,6 +153,7 @@ export class FeishuBot {
       .register("bind", async (command, context) => this.handleBindCommand(context.chatId, command, context.chatType))
       .register("unbind", async (_command, context) => this.handleUnbindCommand(context.chatId, context.chatType))
       .register("status", async (_command, context) => this.handleStatusCommand(context.chatId, context.chatType))
+      .register("queue", async (_command, context) => this.handleQueueCommand(context.chatId))
       .register("doctor", async (command, context) => this.handleDoctorCommand(context.chatId, command, context.chatType))
       .register("ping", async (_command, context) => this.handlePingCommand(context.chatId))
       .register("cancel", async (_command, context) => this.handleCancelCommand(context.chatId))
@@ -368,7 +370,7 @@ export class FeishuBot {
       }
 
       const prompt = await this.buildAgentPrompt(items);
-      const turn = await this.agentManager.prompt(chatId, prompt, { turnId });
+      const turn = await this.agentManager.prompt(chatId, prompt, { turnId, queueSummary: summary });
       await this.sendTurn(chatId, turn);
       await this.finishAcknowledgements(ackStates, "success");
     } catch (error: unknown) {
@@ -755,6 +757,10 @@ export class FeishuBot {
     await this.sendMarkdown(chatId, this.renderStatus(chatId, chatType), "当前配置");
   }
 
+  private async handleQueueCommand(chatId: string) {
+    await this.sendMarkdown(chatId, this.renderQueue(chatId), "队列状态");
+  }
+
   private async handleDoctorCommand(chatId: string, command: SlashCommand, chatType?: string) {
     const report = await runDoctor({
       config: this.config,
@@ -791,7 +797,7 @@ export class FeishuBot {
       activeTurn: state.activeTurn,
       pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
       conversationQueue: { queued: queueStatus.queued },
-      providerQueue,
+      providerQueue: { active: Boolean(providerQueue.active), queued: providerQueue.queued },
       chatType,
       groupBinding: {
         applicable: isGroupChat(chatType),
@@ -822,7 +828,24 @@ export class FeishuBot {
       bindingCount: bindings.length,
       chatSessionCount: this.stateStore.chatSessionCount(),
       processedMessageCount: this.stateStore.processedMessageCount(),
-      commands: ["/help", "/agent", "/cwd", "/project", "/bind", "/unbind", "/status", "/doctor", "/ping", "/cancel", "/reset"],
+      commands: ["/help", "/agent", "/cwd", "/project", "/bind", "/unbind", "/status", "/queue", "/doctor", "/ping", "/cancel", "/reset"],
+    });
+  }
+
+  private renderQueue(chatId: string) {
+    const state = this.getChatState(chatId);
+    const currentProvider = this.agentManager.currentProvider(chatId);
+    return renderQueue({
+      mode: "markdown",
+      visibleOwner: chatId,
+      currentProvider,
+      activeTurn: state.activeTurn,
+      pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
+      conversationQueue: state.queue.status(),
+      providerQueues: this.agentManager.listProviders().map((provider) => ({
+        provider: provider.name,
+        queue: this.agentManager.providerQueueStatus(provider.name),
+      })),
     });
   }
 
@@ -843,6 +866,7 @@ export class FeishuBot {
         { label: "切换目录", command: "/cwd /absolute/path" },
         { label: "项目别名", command: "/project" },
         { label: "当前配置", command: "/status" },
+        { label: "队列状态", command: "/queue" },
         { label: "自检", command: "/doctor" },
         { label: "发送测试", command: "/ping" },
         { label: "取消任务", command: "/cancel" },

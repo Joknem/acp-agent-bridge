@@ -1,5 +1,6 @@
 import { ConversationQueue } from "./ConversationQueue.js";
 import { MessageBatcher } from "./MessageBatcher.js";
+import type { QueueTaskMetadata } from "./QueueSnapshot.js";
 
 export type IncomingPipelineState<TItem> = {
   queue: ConversationQueue;
@@ -39,9 +40,13 @@ export class IncomingMessagePipeline<TItem> {
     state.pendingBatcher?.flush();
   }
 
-  enqueueImmediate(chatId: string, state: IncomingPipelineState<TItem>, work: () => Promise<void>) {
+  enqueueImmediate(chatId: string, state: IncomingPipelineState<TItem>, work: () => Promise<void>, metadata: QueueTaskMetadata = {}) {
     this.flush(state);
-    return state.queue.enqueue(work);
+    return state.queue.enqueue(work, {
+      kind: "command",
+      label: "控制命令",
+      ...metadata,
+    });
   }
 
   schedule(chatId: string, state: IncomingPipelineState<TItem>, item: TItem) {
@@ -61,13 +66,21 @@ export class IncomingMessagePipeline<TItem> {
 
     this.options.onBatchQueued?.(event);
 
-    return state.queue.enqueue(async () => {
-      try {
-        await this.options.processBatch(event);
-      } catch (error: unknown) {
-        if (!this.options.onBatchError) throw error;
-        await this.options.onBatchError(error, event);
-      }
-    });
+    return state.queue.enqueue(
+      async () => {
+        try {
+          await this.options.processBatch(event);
+        } catch (error: unknown) {
+          if (!this.options.onBatchError) throw error;
+          await this.options.onBatchError(error, event);
+        }
+      },
+      {
+        kind: "message_batch",
+        label: "消息批次",
+        summary: event.summary,
+        owner: chatId,
+      },
+    );
   }
 }

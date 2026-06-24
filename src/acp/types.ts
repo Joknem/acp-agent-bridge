@@ -37,6 +37,7 @@ export type AgentSessionInfo = {
 
 export type AgentPromptOptions = {
   turnId?: string;
+  queueSummary?: string;
 };
 
 export type TimeoutCancelStatus = "succeeded" | "failed" | "not_attempted";

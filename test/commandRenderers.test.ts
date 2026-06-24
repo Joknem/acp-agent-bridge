@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { renderAgentList, renderAgentUsage, renderHelp, renderStatus, renderUnknownCommand } from "../src/core/CommandRenderers.js";
+import { renderAgentList, renderAgentUsage, renderHelp, renderQueue, renderStatus, renderUnknownCommand } from "../src/core/CommandRenderers.js";
 
 testHelp();
 testAgentList();
 testStatus();
+testQueue();
 testUnknownAndUsage();
 
 console.log("command renderers tests passed");
@@ -93,6 +94,86 @@ function testStatus() {
   assert(rendered.includes("session 状态：`persisted`"));
   assert(rendered.includes("`最近失败：timeout`"));
   assert(rendered.includes("消息去重缓存：`8`"));
+}
+
+function testQueue() {
+  const rendered = renderQueue({
+    mode: "plain",
+    now: 70_000,
+    visibleOwner: "chat-a",
+    currentProvider: "codex",
+    activeTurn: {
+      turnId: "turn-1",
+      startedAt: 10_000,
+      text: "active prompt",
+    },
+    pendingBatchCount: 1,
+    conversationQueue: {
+      active: {
+        id: "conv-active",
+        kind: "message_batch",
+        label: "消息批次",
+        summary: "active prompt",
+        owner: "chat-a",
+        enqueuedAt: 5_000,
+        startedAt: 10_000,
+      },
+      queued: 1,
+      pending: [
+        {
+          id: "conv-pending",
+          kind: "message_batch",
+          label: "消息批次",
+          summary: "pending prompt",
+          owner: "chat-a",
+          enqueuedAt: 60_000,
+        },
+      ],
+    },
+    providerQueues: [
+      {
+        provider: "codex",
+        queue: {
+          active: {
+            id: "turn-1",
+            kind: "agent_prompt",
+            label: "codex prompt",
+            summary: "active prompt",
+            owner: "chat-a",
+            enqueuedAt: 20_000,
+            startedAt: 30_000,
+          },
+          queued: 0,
+          pending: [],
+        },
+      },
+      {
+        provider: "kimi",
+        queue: {
+          active: {
+            id: "turn-other",
+            kind: "agent_prompt",
+            label: "kimi prompt",
+            summary: "private other chat prompt",
+            owner: "chat-b",
+            enqueuedAt: 50_000,
+            startedAt: 55_000,
+          },
+          queued: 0,
+          pending: [],
+        },
+      },
+    ],
+  });
+
+  assert(rendered.includes("当前聊天队列："));
+  assert(rendered.includes("active turn：turn-1 1m00s active prompt"));
+  assert(rendered.includes("会话队列等待：1"));
+  assert(rendered.includes("conv-pending 消息批次 queued 10s pending prompt"));
+  assert(rendered.includes("codex current"));
+  assert(rendered.includes("turn-1 codex prompt queued 50s running 40s active prompt"));
+  assert(rendered.includes("other-chat kimi prompt other chat queued 20s running 15s"));
+  assert(!rendered.includes("private other chat prompt"));
 }
 
 function testUnknownAndUsage() {

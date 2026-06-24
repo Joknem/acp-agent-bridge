@@ -20,12 +20,12 @@ assert.equal(state.pendingBatcher?.pendingCount(), 2);
 await new Promise((resolve) => setTimeout(resolve, 30));
 assert.deepEqual(queued, ["chat-a:1,2"]);
 assert.deepEqual(processed, ["batch:1,2"]);
-assert.deepEqual(state.queue.status(), { queued: 0 });
+assert.equal(state.queue.status().queued, 0);
 
 pipeline.schedule("chat-a", state, 3);
 await pipeline.enqueueImmediate("chat-a", state, async () => {
   processed.push("immediate");
-});
+}, { id: "command-1", summary: "/status" });
 assert.deepEqual(processed.slice(-2), ["batch:3", "immediate"]);
 
 pipeline.schedule("chat-a", state, 4);

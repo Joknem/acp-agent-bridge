@@ -87,7 +87,13 @@ export class AgentManager {
     const state = this.getChatState(chatId);
     const providerName = state.providerName;
 
-    return this.getPromptQueue(providerName).run(() => this.promptDirect(chatId, providerName, prompt, options));
+    return this.getPromptQueue(providerName).run(() => this.promptDirect(chatId, providerName, prompt, options), {
+      id: options.turnId,
+      kind: "agent_prompt",
+      label: `${providerName} prompt`,
+      summary: options.queueSummary ?? summarizePromptContent(prompt),
+      owner: chatId,
+    });
   }
 
   providerQueueStatus(providerName: string) {
@@ -295,4 +301,18 @@ export class AgentManager {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function summarizePromptContent(prompt: AgentPromptContent) {
+  return prompt
+    .map((block) => {
+      if (block && typeof block === "object" && "type" in block) {
+        const record = block as Record<string, unknown>;
+        const type = typeof record.type === "string" ? record.type : "content";
+        return typeof record.text === "string" && record.text.trim() ? record.text : `[${type}]`;
+      }
+
+      return String(block);
+    })
+    .join(" / ");
 }

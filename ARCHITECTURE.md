@@ -35,8 +35,10 @@ They should not grow generic agent-flow behavior when the behavior can be shared
 - `src/core/MessageBatcher.ts`
 - `src/core/ConversationQueue.ts`
 - `src/core/CommandRouter.ts`
+- `src/core/CommandRenderers.ts`
 - `src/core/IncomingMessagePipeline.ts`
 - `src/core/Doctor.ts`
+- `src/core/QueueSnapshot.ts`
 - `src/core/ReplyFormatter.ts`
 - `src/core/ReplyAdapter.ts`
 - `src/core/TurnId.ts`
@@ -49,11 +51,11 @@ This layer is platform-neutral. It is the beginning of a shared pipeline inspire
 - `CommandRouter` parses slash commands once and lets adapters register platform-specific command handlers.
 - `IncomingMessagePipeline` coordinates batching, queueing, and batch error handling for ordinary platform messages.
 - `Doctor` runs platform-neutral configuration, state, agent, and chat diagnostics that adapters can expose through commands.
+- `CommandRenderers` formats shared command output such as `/help`, `/agent`, `/status`, and `/queue`.
+- `QueueSnapshot` is the shared queue metadata shape used by conversation queues and per-provider agent queues.
 - `ReplyFormatter` normalizes agent/command/error replies once, preserving Markdown for rich platforms while producing cleaner plain text for QQ-style channels.
 - `ReplyAdapter` delivers formatted replies through platform send primitives, including markdown-to-text fallback for rich platforms.
-- `TurnId` gives each ordinary agent prompt a short searchable identifier that is shown in `/status`, `/doctor chat`, logs, and prompt errors.
-
-The next good extraction is durable ACP session resume, so service restarts can preserve more conversation context.
+- `TurnId` gives each ordinary agent prompt a short searchable identifier that is shown in `/status`, `/queue`, `/doctor chat`, logs, and prompt errors.
 
 ### Agent Gateway
 
