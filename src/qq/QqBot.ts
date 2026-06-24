@@ -4,7 +4,7 @@ import type { AppConfig } from "../config.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
 import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
-import { formatAgentReply, formatDoctorReply, formatErrorReply, formatReplyForPlainText, type FormattedReply } from "../core/ReplyFormatter.js";
+import { ReplyAdapter } from "../core/ReplyAdapter.js";
 import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
 import { inferImageMimeType, readWebStreamToBuffer } from "../utils/media.js";
@@ -34,6 +34,11 @@ type QqCommandContext = {
   state: ChatState;
 };
 
+type QqReplyDestination = {
+  conversation: QqConversation;
+  replyToMessageId: string;
+};
+
 const OP_DISPATCH = 0;
 const OP_HEARTBEAT = 1;
 const OP_IDENTIFY = 2;
@@ -53,6 +58,7 @@ export class QqBot {
   private readonly auth: QqAccessTokenProvider;
   private readonly commandRouter: CommandRouter<QqCommandContext>;
   private readonly incomingPipeline: IncomingMessagePipeline<QqPromptItem>;
+  private readonly replies: ReplyAdapter<QqReplyDestination>;
 
   constructor(
     private readonly config: AppConfig,
@@ -64,6 +70,10 @@ export class QqBot {
       appId: config.qq.appId,
       appSecret: config.qq.appSecret,
       legacyToken: config.qq.token,
+    });
+    this.replies = new ReplyAdapter<QqReplyDestination>({
+      mode: "plain-text",
+      sendPlainText: (destination, text) => this.sendText(destination.conversation, destination.replyToMessageId, text),
     });
     this.commandRouter = this.createCommandRouter();
     this.incomingPipeline = this.createIncomingPipeline();
@@ -79,7 +89,7 @@ export class QqBot {
     return new CommandRouter<QqCommandContext>()
       .register("help", async (_command, context) => this.handleHelpCommand(context.message))
       .register("status", async (_command, context) =>
-        this.sendText(context.message.conversation, context.message.messageId, this.renderStatus(context.message.conversation.chatId, context.state)),
+        this.sendCommandReply(context.message, this.renderStatus(context.message.conversation.chatId, context.state), "当前配置", "status"),
       )
       .register("doctor", async (command, context) => this.handleDoctorCommand(context.message, context.state, command))
       .register("reset", async (_command, context) => this.handleResetCommand(context.message))
@@ -301,7 +311,7 @@ export class QqBot {
       await this.sendTurn(firstMessage.conversation, firstMessage.messageId, turn);
     } catch (error: unknown) {
       this.logger.error("qq agent turn failed", { chatId, message: errorMessage(error), text: truncate(summary, 120) });
-      await this.sendReply(firstMessage.conversation, firstMessage.messageId, formatErrorReply(errorMessage(error)));
+      await this.replies.sendError(replyDestination(firstMessage), errorMessage(error));
     } finally {
       if (state.activeTurn === activeTurn) state.activeTurn = undefined;
     }
@@ -309,10 +319,10 @@ export class QqBot {
 
   private async handleResetCommand(message: QqIncomingMessage) {
     const reset = await this.agentManager.reset(message.conversation.chatId);
-    await this.sendText(
-      message.conversation,
-      message.messageId,
+    await this.sendCommandReply(
+      message,
       reset ? "已重置当前 QQ 会话的 agent session。" : "当前 QQ 会话还没有 agent session。",
+      "重置会话",
     );
   }
 
@@ -320,21 +330,21 @@ export class QqBot {
     const rawAction = command.args[0]?.toLowerCase();
     const rawName = rawAction === "switch" ? command.args[1] : command.args[0];
     if (!rawName) {
-      await this.sendText(message.conversation, message.messageId, this.renderAgentList(message.conversation.chatId));
+      await this.sendCommandReply(message, this.renderAgentList(message.conversation.chatId), "Agent 列表");
       return;
     }
 
     if (!this.agentManager.hasProvider(rawName)) {
-      await this.sendText(message.conversation, message.messageId, `未知 agent：${rawName}\n\n${this.renderAgentList(message.conversation.chatId)}`);
+      await this.sendCommandReply(message, `未知 agent：${rawName}\n\n${this.renderAgentList(message.conversation.chatId)}`, "Agent 不存在");
       return;
     }
 
     const provider = await this.agentManager.switchProvider(message.conversation.chatId, rawName);
-    await this.sendText(message.conversation, message.messageId, `已切换到 ${provider}。`);
+    await this.sendCommandReply(message, `已切换到 ${provider}。`, "Agent 已切换");
   }
 
   private async handleHelpCommand(message: QqIncomingMessage) {
-    await this.sendText(message.conversation, message.messageId, this.renderHelp());
+    await this.sendCommandReply(message, this.renderHelp(), "帮助", "help");
   }
 
   private async handleDoctorCommand(message: QqIncomingMessage, state: ChatState, command: SlashCommand) {
@@ -349,11 +359,11 @@ export class QqBot {
       scope: parseDoctorScope(command.args[0]),
     });
 
-    await this.sendReply(message.conversation, message.messageId, formatDoctorReply(report));
+    await this.replies.sendDoctor(replyDestination(message), report);
   }
 
   private async handleUnknownCommand(message: QqIncomingMessage, command: SlashCommand) {
-    await this.sendText(message.conversation, message.messageId, `未知命令：${command.token}\n\n${this.renderHelp()}`);
+    await this.sendCommandReply(message, `未知命令：${command.token}\n\n${this.renderHelp()}`, "未知命令");
   }
 
   private renderStatus(chatId: string, state: ChatState) {
@@ -401,7 +411,7 @@ export class QqBot {
   }
 
   private async sendTurn(conversation: QqConversation, replyToMessageId: string, turn: AgentTurn) {
-    await this.sendReply(conversation, replyToMessageId, formatAgentReply(turn));
+    await this.replies.sendAgent({ conversation, replyToMessageId }, turn);
   }
 
   private async buildAgentPrompt(items: QqPromptItem[]): Promise<AgentPromptContent> {
@@ -469,8 +479,8 @@ export class QqBot {
     }
   }
 
-  private async sendReply(conversation: QqConversation, replyToMessageId: string, reply: FormattedReply) {
-    await this.sendText(conversation, replyToMessageId, formatReplyForPlainText(reply));
+  private async sendCommandReply(message: QqIncomingMessage, markdown: string, title?: string, kind: "help" | "status" | "plain" = "plain") {
+    await this.replies.sendMarkdown(replyDestination(message), markdown, title, kind);
   }
 
   private async sendTextChunk(conversation: QqConversation, replyToMessageId: string, content: string, msgSeq: number) {
@@ -627,4 +637,11 @@ function websocketStateLabel(state: number) {
 
 function isImmediateCommand(message: QqIncomingMessage) {
   return message.imageAttachments.length === 0 && isSlashCommand(message.text);
+}
+
+function replyDestination(message: QqIncomingMessage): QqReplyDestination {
+  return {
+    conversation: message.conversation,
+    replyToMessageId: message.messageId,
+  };
 }

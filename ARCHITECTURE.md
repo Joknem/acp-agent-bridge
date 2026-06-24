@@ -38,6 +38,7 @@ They should not grow generic agent-flow behavior when the behavior can be shared
 - `src/core/IncomingMessagePipeline.ts`
 - `src/core/Doctor.ts`
 - `src/core/ReplyFormatter.ts`
+- `src/core/ReplyAdapter.ts`
 
 This layer is platform-neutral. It is the beginning of a shared pipeline inspired by messaging-adapter architectures:
 
@@ -48,8 +49,9 @@ This layer is platform-neutral. It is the beginning of a shared pipeline inspire
 - `IncomingMessagePipeline` coordinates batching, queueing, and batch error handling for ordinary platform messages.
 - `Doctor` runs platform-neutral configuration, state, agent, and chat diagnostics that adapters can expose through commands.
 - `ReplyFormatter` normalizes agent/command/error replies once, preserving Markdown for rich platforms while producing cleaner plain text for QQ-style channels.
+- `ReplyAdapter` delivers formatted replies through platform send primitives, including markdown-to-text fallback for rich platforms.
 
-The next good extraction is a fuller shared `ReplyAdapter`, so Feishu and QQ only provide platform-specific ingress, media download, reactions, and send primitives.
+The next good extraction is shared observability around agent turns, so timeout and queue state can be inspected consistently across platforms.
 
 ### Agent Gateway
 
@@ -71,9 +73,10 @@ Persisted state includes per-chat provider/cwd, project aliases, group bindings,
 - `src/markdown/larkPost.ts`
 - `src/feishu/larkCard.ts`
 - `src/core/ReplyFormatter.ts`
+- `src/core/ReplyAdapter.ts`
 - QQ text splitting in `src/qq/qqMessages.ts`
 
-Platform renderers convert agent Markdown into platform-specific message formats. Feishu uses `post` or interactive cards; QQ receives a plain-text rendering from `ReplyFormatter` and then sends text chunks.
+Platform renderers convert agent Markdown into platform-specific message formats. Feishu uses `post` or interactive cards through `ReplyAdapter`; QQ receives a plain-text rendering and then sends text chunks.
 
 ## Design Direction
 
@@ -85,6 +88,7 @@ PlatformAdapter
   -> IncomingMessagePipeline
   -> CommandRouter
   -> AgentGateway
+  -> ReplyFormatter
   -> ReplyAdapter
 ```
 

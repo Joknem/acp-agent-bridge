@@ -6,7 +6,7 @@ import type { Logger } from "../logger.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
 import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
-import { formatAgentReply, formatDoctorReply, formatMarkdownReply, formatReplyForPlainText, type FormattedReply } from "../core/ReplyFormatter.js";
+import { ReplyAdapter } from "../core/ReplyAdapter.js";
 import { markdownToLarkCards, shouldUseLarkCard, type LarkCardContent } from "./larkCard.js";
 import { markdownToLarkPost, type LarkPostContent } from "../markdown/larkPost.js";
 import { parseIncomingFeishuMessage, type IncomingFeishuMessage } from "./incomingMessage.js";
@@ -82,6 +82,7 @@ export class FeishuBot {
   private readonly wsClient: lark.WSClient;
   private readonly commandRouter: CommandRouter<FeishuCommandContext>;
   private readonly incomingPipeline: IncomingMessagePipeline<PendingIncoming>;
+  private readonly replies: ReplyAdapter<string>;
   private readonly chats = new Map<string, ChatState>();
 
   constructor(
@@ -100,6 +101,18 @@ export class FeishuBot {
     this.wsClient = new lark.WSClient({
       ...baseConfig,
       loggerLevel: mapLogLevel(config.logLevel),
+    });
+    this.replies = new ReplyAdapter<string>({
+      mode: "markdown",
+      sendMarkdown: (chatId, markdown, title) => this.sendMarkdown(chatId, markdown, title),
+      sendPlainText: (chatId, text) => this.sendText(chatId, text),
+      onMarkdownSendError: (error, reply) => {
+        this.logger.warn("failed to send rich feishu reply, falling back to text", {
+          kind: reply.kind,
+          title: reply.title,
+          message: errorMessage(error),
+        });
+      },
     });
     this.commandRouter = this.createCommandRouter();
     this.incomingPipeline = this.createIncomingPipeline();
@@ -154,10 +167,8 @@ export class FeishuBot {
       },
       onBatchError: async (error, event) => {
         this.logTurnError(event.chatId, error);
-        const reply = formatMarkdownReply(this.renderTurnError(error), "执行失败", "error");
-        await this.sendReply(event.chatId, reply).catch(async (sendError: unknown) => {
+        await this.replies.sendMarkdown(event.chatId, this.renderTurnError(error), "执行失败", "error").catch((sendError: unknown) => {
           this.logger.error("failed to send error message", errorMessage(sendError));
-          await this.sendText(event.chatId, formatReplyForPlainText(reply));
         });
       },
     });
@@ -291,10 +302,8 @@ export class FeishuBot {
       );
     } catch (error: unknown) {
       this.logTurnError(chatId, error);
-      const reply = formatMarkdownReply(this.renderTurnError(error), "执行失败", "error");
-      await this.sendReply(chatId, reply).catch(async (sendError: unknown) => {
+      await this.replies.sendMarkdown(chatId, this.renderTurnError(error), "执行失败", "error").catch(async (sendError: unknown) => {
         this.logger.error("failed to send error message", errorMessage(sendError));
-        await this.sendText(chatId, formatReplyForPlainText(reply));
       });
     }
   }
@@ -735,7 +744,7 @@ export class FeishuBot {
       scope: parseDoctorScope(command.args[0]),
     });
 
-    await this.sendReply(chatId, formatDoctorReply(report));
+    await this.replies.sendDoctor(chatId, report);
   }
 
   private async handlePingCommand(chatId: string) {
@@ -864,11 +873,11 @@ export class FeishuBot {
     if (this.config.debug && this.config.showThinkingTool !== "force") {
       const debugMarkdown = buildDebugMarkdown(turn, this.config.showThinkingTool);
       if (debugMarkdown) {
-        await this.sendReply(chatId, formatMarkdownReply(debugMarkdown, "调试信息", "debug"));
+        await this.replies.sendMarkdown(chatId, debugMarkdown, "调试信息", "debug");
       }
     }
 
-    await this.sendReply(chatId, formatAgentReply(turn));
+    await this.replies.sendAgent(chatId, turn);
   }
 
   private async buildAgentPrompt(items: PendingIncoming[]): Promise<AgentPromptContent> {
@@ -946,10 +955,6 @@ export class FeishuBot {
       this.logger.warn("failed to send lark post, falling back to text", errorMessage(error));
       await this.sendText(chatId, `${title ? `${title}\n\n` : ""}${markdown}`);
     }
-  }
-
-  private async sendReply(chatId: string, reply: FormattedReply) {
-    await this.sendMarkdown(chatId, reply.markdown, reply.title);
   }
 
   private async sendInteractiveCards(chatId: string, cards: LarkCardContent[]) {
