@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
+import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
 import { ConversationQueue } from "../core/ConversationQueue.js";
 import { MessageBatcher } from "../core/MessageBatcher.js";
 import { markdownToLarkCards, shouldUseLarkCard, type LarkCardContent } from "./larkCard.js";
@@ -61,6 +62,11 @@ type ProcessTextOptions = {
   chatType?: string;
 };
 
+type FeishuCommandContext = {
+  chatId: string;
+  chatType?: string;
+};
+
 type ChatState = {
   queue: ConversationQueue;
   activeTurn?: ActiveTurn;
@@ -75,6 +81,7 @@ const BIND_NOTICE_COOLDOWN_MS = 30_000;
 export class FeishuBot {
   private readonly client: lark.Client;
   private readonly wsClient: lark.WSClient;
+  private readonly commandRouter: CommandRouter<FeishuCommandContext>;
   private readonly chats = new Map<string, ChatState>();
 
   constructor(
@@ -94,6 +101,7 @@ export class FeishuBot {
       ...baseConfig,
       loggerLevel: mapLogLevel(config.logLevel),
     });
+    this.commandRouter = this.createCommandRouter();
   }
 
   start() {
@@ -108,6 +116,20 @@ export class FeishuBot {
     void this.checkCredentials();
     this.wsClient.start({ eventDispatcher: dispatcher });
     this.logger.info("feishu websocket bot started");
+  }
+
+  private createCommandRouter() {
+    return new CommandRouter<FeishuCommandContext>()
+      .register("help", async (_command, context) => this.handleHelpCommand(context.chatId))
+      .register(["agent", "agents"], async (command, context) => this.handleAgentCommand(context.chatId, command))
+      .register("cwd", async (command, context) => this.handleCwdCommand(context.chatId, command.raw, context.chatType))
+      .register("project", async (command, context) => this.handleProjectCommand(context.chatId, command, context.chatType))
+      .register("bind", async (command, context) => this.handleBindCommand(context.chatId, command, context.chatType))
+      .register("unbind", async (_command, context) => this.handleUnbindCommand(context.chatId, context.chatType))
+      .register("status", async (_command, context) => this.handleStatusCommand(context.chatId, context.chatType))
+      .register("ping", async (_command, context) => this.handlePingCommand(context.chatId))
+      .register("cancel", async (_command, context) => this.handleCancelCommand(context.chatId))
+      .register("reset", async (_command, context) => this.handleResetCommand(context.chatId));
   }
 
   private async checkCredentials() {
@@ -179,7 +201,7 @@ export class FeishuBot {
       return;
     }
 
-    if (incoming.kind === "text" && isImmediateCommand(incoming.text)) {
+    if (incoming.kind === "text" && isSlashCommand(incoming.text)) {
       await this.processIncoming(message.chat_id, message.message_id, incoming, { chatType: message.chat_type });
       return;
     }
@@ -252,58 +274,12 @@ export class FeishuBot {
   ) {
     const text = incoming.text;
     try {
-      if (isHelpCommand(text)) {
-        await this.handleHelpCommand(chatId);
-        return;
-      }
-
-      if (isAgentCommand(text)) {
-        await this.handleAgentCommand(chatId, text);
-        return;
-      }
-
-      if (isCwdCommand(text)) {
-        await this.handleCwdCommand(chatId, text, options.chatType);
-        return;
-      }
-
-      if (isProjectCommand(text)) {
-        await this.handleProjectCommand(chatId, text, options.chatType);
-        return;
-      }
-
-      if (isBindCommand(text)) {
-        await this.handleBindCommand(chatId, text, options.chatType);
-        return;
-      }
-
-      if (isUnbindCommand(text)) {
-        await this.handleUnbindCommand(chatId, options.chatType);
-        return;
-      }
-
-      if (isStatusCommand(text)) {
-        await this.handleStatusCommand(chatId, options.chatType);
-        return;
-      }
-
-      if (isPingCommand(text)) {
-        await this.handlePingCommand(chatId);
-        return;
-      }
-
-      if (isCancelCommand(text)) {
-        await this.handleCancelCommand(chatId);
-        return;
-      }
-
-      if (isResetCommand(text)) {
-        await this.handleResetCommand(chatId);
-        return;
-      }
-
-      if (isSlashCommand(text)) {
-        await this.sendMarkdown(chatId, `未知命令：\`${text.split(/\s+/)[0]}\`\n\n${this.renderHelp()}`, "未知命令");
+      const handledCommand = await this.commandRouter.dispatch(
+        text,
+        { chatId, chatType: options.chatType },
+        async (command, context) => this.handleUnknownCommand(context.chatId, command),
+      );
+      if (handledCommand) {
         return;
       }
 
@@ -388,8 +364,9 @@ export class FeishuBot {
     }
   }
 
-  private async handleAgentCommand(chatId: string, text: string) {
-    const [, rawAction, rawName] = text.match(/^\/agents?(?:\s+(\S+))?(?:\s+(\S+))?/i) ?? [];
+  private async handleAgentCommand(chatId: string, command: SlashCommand) {
+    const rawAction = command.args[0];
+    const rawName = command.args[1];
     const action = rawAction?.toLowerCase();
     const name = rawName?.toLowerCase();
 
@@ -460,9 +437,8 @@ export class FeishuBot {
     );
   }
 
-  private async handleProjectCommand(chatId: string, text: string, chatType?: string) {
-    const args = splitCommand(text.replace(/^\/project(?:\s+)?/i, ""));
-    const action = args[0]?.toLowerCase();
+  private async handleProjectCommand(chatId: string, command: SlashCommand, chatType?: string) {
+    const action = command.args[0]?.toLowerCase();
 
     if (!action || action === "list") {
       await this.sendMarkdown(chatId, this.renderProjectList(), "项目别名");
@@ -470,8 +446,8 @@ export class FeishuBot {
     }
 
     if (action === "add") {
-      const name = args[1];
-      const rawCwd = args[2] ?? this.agentManager.currentCwd(chatId);
+      const name = command.args[1];
+      const rawCwd = command.args[2] ?? this.agentManager.currentCwd(chatId);
       if (!name) {
         await this.sendMarkdown(chatId, "用法：`/project add <name> [absolute-path]`");
         return;
@@ -485,7 +461,7 @@ export class FeishuBot {
     }
 
     if (action === "remove" || action === "rm" || action === "delete") {
-      const name = args[1];
+      const name = command.args[1];
       if (!name) {
         await this.sendMarkdown(chatId, "用法：`/project remove <name>`");
         return;
@@ -520,13 +496,13 @@ export class FeishuBot {
     );
   }
 
-  private async handleBindCommand(chatId: string, text: string, chatType?: string) {
+  private async handleBindCommand(chatId: string, command: SlashCommand, chatType?: string) {
     if (!isGroupChat(chatType)) {
       await this.sendMarkdown(chatId, ["私聊不需要绑定项目。", "", "私聊切换目录：`/cwd /absolute/path`", "保存常用目录：`/project add <name> [path]`"].join("\n"), "绑定项目");
       return;
     }
 
-    const args = splitCommand(text.replace(/^\/bind(?:\s+)?/i, ""));
+    const args = command.args;
     const target = args[0];
     if (!target || ["status", "current", "show"].includes(target.toLowerCase())) {
       await this.sendMarkdown(chatId, this.renderBindingStatus(chatId, chatType), "群聊绑定");
@@ -632,6 +608,10 @@ export class FeishuBot {
 
   private async handleHelpCommand(chatId: string) {
     await this.sendMarkdown(chatId, this.renderHelp(), "帮助");
+  }
+
+  private async handleUnknownCommand(chatId: string, command: SlashCommand) {
+    await this.sendMarkdown(chatId, `未知命令：\`${command.token}\`\n\n${this.renderHelp()}`, "未知命令");
   }
 
   private renderProjectList() {
@@ -1340,54 +1320,6 @@ function permissionSuggestion(message: string) {
   ].join("\n");
 }
 
-function isImmediateCommand(text: string) {
-  return isSlashCommand(text);
-}
-
-function isSlashCommand(text: string) {
-  return text.trim().startsWith("/");
-}
-
-function isHelpCommand(text: string) {
-  return /^\/help(?:\s|$)/i.test(text.trim());
-}
-
-function isAgentCommand(text: string) {
-  return /^\/agents?(?:\s|$)/i.test(text.trim());
-}
-
-function isCwdCommand(text: string) {
-  return /^\/cwd(?:\s|$)/i.test(text.trim());
-}
-
-function isProjectCommand(text: string) {
-  return /^\/project(?:\s|$)/i.test(text.trim());
-}
-
-function isBindCommand(text: string) {
-  return /^\/bind(?:\s|$)/i.test(text.trim());
-}
-
-function isUnbindCommand(text: string) {
-  return /^\/unbind(?:\s|$)/i.test(text.trim());
-}
-
-function isStatusCommand(text: string) {
-  return /^\/status(?:\s|$)/i.test(text.trim());
-}
-
-function isPingCommand(text: string) {
-  return /^\/ping(?:\s|$)/i.test(text.trim());
-}
-
-function isCancelCommand(text: string) {
-  return /^\/cancel(?:\s|$)/i.test(text.trim());
-}
-
-function isResetCommand(text: string) {
-  return /^\/reset(?:\s|$)/i.test(text.trim());
-}
-
 function formatDuration(milliseconds: number) {
   const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -1436,48 +1368,4 @@ function normalizeNewProjectName(name: string) {
   }
 
   return normalized;
-}
-
-function splitCommand(input: string) {
-  const args: string[] = [];
-  let current = "";
-  let quote: "'" | '"' | undefined;
-  let escaping = false;
-
-  for (const char of input.trim()) {
-    if (escaping) {
-      current += char;
-      escaping = false;
-      continue;
-    }
-
-    if (char === "\\") {
-      escaping = true;
-      continue;
-    }
-
-    if (quote) {
-      if (char === quote) quote = undefined;
-      else current += char;
-      continue;
-    }
-
-    if (char === "'" || char === '"') {
-      quote = char;
-      continue;
-    }
-
-    if (/\s/.test(char)) {
-      if (current) {
-        args.push(current);
-        current = "";
-      }
-      continue;
-    }
-
-    current += char;
-  }
-
-  if (current) args.push(current);
-  return args;
 }

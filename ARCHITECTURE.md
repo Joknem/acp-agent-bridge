@@ -34,14 +34,16 @@ They should not grow generic agent-flow behavior when the behavior can be shared
 - `src/core/NormalizedMessage.ts`
 - `src/core/MessageBatcher.ts`
 - `src/core/ConversationQueue.ts`
+- `src/core/CommandRouter.ts`
 
 This layer is platform-neutral. It is the beginning of a shared pipeline inspired by messaging-adapter architectures:
 
 - `NormalizedMessage` is the common shape for future Feishu/QQ/other-platform inputs.
 - `MessageBatcher` merges adjacent ordinary messages before a prompt is created.
 - `ConversationQueue` serializes ordinary work inside one chat/conversation.
+- `CommandRouter` parses slash commands once and lets adapters register platform-specific command handlers.
 
-The next good extraction is a shared `CommandRouter` and `IncomingMessagePipeline`, so Feishu and QQ only provide platform-specific adapters.
+The next good extraction is a shared `IncomingMessagePipeline` plus a `ReplyAdapter`, so Feishu and QQ only provide platform-specific ingress, media download, and send primitives.
 
 ### Agent Gateway
 

@@ -1,6 +1,7 @@
 import type { AgentManager } from "../acp/AgentManager.js";
 import type { AgentPromptContent, AgentTurn } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
+import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
 import { ConversationQueue } from "../core/ConversationQueue.js";
 import { MessageBatcher } from "../core/MessageBatcher.js";
 import type { Logger } from "../logger.js";
@@ -29,6 +30,11 @@ type ChatState = {
   pendingBatcher?: MessageBatcher<QqPromptItem>;
 };
 
+type QqCommandContext = {
+  message: QqIncomingMessage;
+  state: ChatState;
+};
+
 const OP_DISPATCH = 0;
 const OP_HEARTBEAT = 1;
 const OP_IDENTIFY = 2;
@@ -45,6 +51,7 @@ export class QqBot {
   private stopped = false;
   private readonly chats = new Map<string, ChatState>();
   private readonly auth: QqAccessTokenProvider;
+  private readonly commandRouter: CommandRouter<QqCommandContext>;
 
   constructor(
     private readonly config: AppConfig,
@@ -57,12 +64,23 @@ export class QqBot {
       appSecret: config.qq.appSecret,
       legacyToken: config.qq.token,
     });
+    this.commandRouter = this.createCommandRouter();
   }
 
   async start() {
     if (!this.config.qq.enabled) return;
     this.stopped = false;
     await this.connect();
+  }
+
+  private createCommandRouter() {
+    return new CommandRouter<QqCommandContext>()
+      .register("help", async (_command, context) => this.handleHelpCommand(context.message))
+      .register("status", async (_command, context) =>
+        this.sendText(context.message.conversation, context.message.messageId, this.renderStatus(context.message.conversation.chatId, context.state)),
+      )
+      .register("reset", async (_command, context) => this.handleResetCommand(context.message))
+      .register(["agent", "agents"], async (command, context) => this.handleAgentCommand(context.message, command));
   }
 
   stop() {
@@ -262,21 +280,12 @@ export class QqBot {
   }
 
   private async processMessage(message: QqIncomingMessage, state: ChatState) {
-    const chatId = message.conversation.chatId;
-
-    if (message.text === "/status") {
-      await this.sendText(message.conversation, message.messageId, this.renderStatus(chatId, state));
-      return;
-    }
-
-    if (message.text === "/reset") {
-      const reset = await this.agentManager.reset(chatId);
-      await this.sendText(message.conversation, message.messageId, reset ? "已重置当前 QQ 会话的 agent session。" : "当前 QQ 会话还没有 agent session。");
-      return;
-    }
-
-    if (message.text.startsWith("/agent")) {
-      await this.handleAgentCommand(message);
+    const handledCommand = await this.commandRouter.dispatch(
+      message.text,
+      { message, state },
+      async (command, context) => this.handleUnknownCommand(context.message, command),
+    );
+    if (handledCommand) {
       return;
     }
 
@@ -307,8 +316,18 @@ export class QqBot {
     }
   }
 
-  private async handleAgentCommand(message: QqIncomingMessage) {
-    const [, rawName] = message.text.match(/^\/agents?(?:\s+(\S+))?/i) ?? [];
+  private async handleResetCommand(message: QqIncomingMessage) {
+    const reset = await this.agentManager.reset(message.conversation.chatId);
+    await this.sendText(
+      message.conversation,
+      message.messageId,
+      reset ? "已重置当前 QQ 会话的 agent session。" : "当前 QQ 会话还没有 agent session。",
+    );
+  }
+
+  private async handleAgentCommand(message: QqIncomingMessage, command: SlashCommand) {
+    const rawAction = command.args[0]?.toLowerCase();
+    const rawName = rawAction === "switch" ? command.args[1] : command.args[0];
     if (!rawName) {
       await this.sendText(message.conversation, message.messageId, this.renderAgentList(message.conversation.chatId));
       return;
@@ -321,6 +340,14 @@ export class QqBot {
 
     const provider = await this.agentManager.switchProvider(message.conversation.chatId, rawName);
     await this.sendText(message.conversation, message.messageId, `已切换到 ${provider}。`);
+  }
+
+  private async handleHelpCommand(message: QqIncomingMessage) {
+    await this.sendText(message.conversation, message.messageId, this.renderHelp());
+  }
+
+  private async handleUnknownCommand(message: QqIncomingMessage, command: SlashCommand) {
+    await this.sendText(message.conversation, message.messageId, `未知命令：${command.token}\n\n${this.renderHelp()}`);
   }
 
   private renderStatus(chatId: string, state: ChatState) {
@@ -351,6 +378,10 @@ export class QqBot {
       return `- ${provider.name}${suffix}: ${[provider.command, ...provider.args].join(" ")}`;
     });
     return [`当前 agent：${current}`, "", "可用 agent：", ...lines].join("\n");
+  }
+
+  private renderHelp() {
+    return ["命令：", "- /help", "- /status", "- /agent", "- /agent <name>", "- /agent switch <name>", "- /reset"].join("\n");
   }
 
   private async sendTurn(conversation: QqConversation, replyToMessageId: string, turn: AgentTurn) {
@@ -520,5 +551,5 @@ function errorMessage(error: unknown) {
 }
 
 function isImmediateCommand(message: QqIncomingMessage) {
-  return message.imageAttachments.length === 0 && message.text.trim().startsWith("/");
+  return message.imageAttachments.length === 0 && isSlashCommand(message.text);
 }
