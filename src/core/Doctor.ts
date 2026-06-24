@@ -36,6 +36,9 @@ export type DoctorChat = {
   pendingBatchCount?: number;
   activeTurnId?: string;
   activeText?: string;
+  sessionId?: string;
+  sessionSource?: string;
+  sessionPersisted?: boolean;
   binding?: {
     cwd: string;
     projectName?: string;
@@ -50,6 +53,7 @@ export type DoctorPlatformStatus = {
 export type DoctorStateStats = {
   projects: number;
   bindings: number;
+  chatSessions: number;
   processedMessages: number;
 };
 
@@ -168,6 +172,7 @@ async function buildStateSection(config: AppConfig, state: DoctorStateStats): Pr
       await stateFileItem(config.stateFile),
       ok("项目别名", String(state.projects)),
       ok("群聊绑定", String(state.bindings)),
+      ok("持久化 session", String(state.chatSessions)),
       ok("消息去重缓存", String(state.processedMessages)),
     ],
   };
@@ -209,6 +214,9 @@ function buildChatSection(chat: DoctorChat): DoctorSection {
       chat.chatType ? ok("聊天类型", chat.chatType) : warn("聊天类型", "未知"),
       ok("当前 agent", chat.currentProvider),
       ok("当前 cwd", `\`${chat.currentCwd}\``),
+      chat.sessionId
+        ? ok("当前 session", `\`${chat.sessionId}\`${renderSessionState(chat.sessionSource, chat.sessionPersisted)}`)
+        : warn("当前 session", "未创建"),
       ok("排队消息", String(chat.queued)),
       chat.pendingBatchCount ? ok("正在合并消息", String(chat.pendingBatchCount)) : ok("正在合并消息", "0"),
       chat.activeTurnId ? warn("当前 Turn ID", chat.activeTurnId) : ok("当前 Turn ID", "无"),
@@ -216,6 +224,11 @@ function buildChatSection(chat: DoctorChat): DoctorSection {
       chat.binding ? ok("绑定项目", `${chat.binding.projectName ? `${chat.binding.projectName} -> ` : ""}\`${chat.binding.cwd}\``) : warn("绑定项目", "未绑定"),
     ],
   };
+}
+
+function renderSessionState(source: string | undefined, persisted: boolean | undefined) {
+  const state = [...new Set([source, persisted ? "persisted" : undefined].filter(Boolean))].join(", ");
+  return state ? ` (${state})` : "";
 }
 
 async function directoryItem(label: string, directory: string): Promise<DoctorItem> {

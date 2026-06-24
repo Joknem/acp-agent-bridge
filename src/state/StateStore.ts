@@ -10,25 +10,34 @@ const bindingSchema = z.object({
   updatedAt: z.number().int().nonnegative(),
 });
 
+const chatSessionSchema = z.object({
+  sessionId: z.string().min(1),
+  cwd: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+  resumedAt: z.number().int().nonnegative().optional(),
+});
+
 const processedMessageSchema = z.object({
   seenAt: z.number().int().nonnegative(),
 });
 
+const chatSchema = z.object({
+  providerName: z.string().min(1).optional(),
+  cwd: z.string().min(1).optional(),
+  sessions: z.record(z.string(), chatSessionSchema).default({}),
+});
+
 const stateSchema = z.object({
   version: z.literal(1),
-  chats: z.record(
-    z.string(),
-    z.object({
-      providerName: z.string().min(1).optional(),
-      cwd: z.string().min(1).optional(),
-    }),
-  ),
+  chats: z.record(z.string(), chatSchema),
   projects: z.record(z.string(), z.string().min(1)),
   bindings: z.record(z.string(), bindingSchema).default({}),
   processedMessages: z.record(z.string(), processedMessageSchema).default({}),
 });
 
 export type PersistedState = z.infer<typeof stateSchema>;
+export type PersistedChatSession = z.infer<typeof chatSessionSchema>;
 
 export class StateStore {
   private state: PersistedState = {
@@ -80,8 +89,55 @@ export class StateStore {
     this.state.chats[chatId] = {
       ...this.state.chats[chatId],
       ...value,
+      sessions: this.state.chats[chatId]?.sessions ?? {},
     };
     void this.save();
+  }
+
+  getChatSession(chatId: string, providerName: string) {
+    return this.state.chats[chatId]?.sessions[normalizeProviderName(providerName)];
+  }
+
+  setChatSession(chatId: string, providerName: string, value: { sessionId: string; cwd: string; resumed?: boolean }) {
+    const now = Date.now();
+    const chat = this.ensureChat(chatId);
+    const normalizedProvider = normalizeProviderName(providerName);
+    const previous = chat.sessions[normalizedProvider];
+    chat.sessions[normalizedProvider] = {
+      sessionId: value.sessionId,
+      cwd: value.cwd,
+      createdAt: previous?.createdAt ?? now,
+      updatedAt: now,
+      resumedAt: value.resumed ? now : previous?.resumedAt,
+    };
+    void this.save();
+  }
+
+  deleteChatSession(chatId: string, providerName: string) {
+    const sessions = this.state.chats[chatId]?.sessions;
+    if (!sessions) return false;
+
+    const normalizedProvider = normalizeProviderName(providerName);
+    const existed = normalizedProvider in sessions;
+    delete sessions[normalizedProvider];
+    if (existed) void this.save();
+    return existed;
+  }
+
+  clearChatSessions(chatId: string) {
+    const chat = this.state.chats[chatId];
+    if (!chat) return 0;
+
+    const count = Object.keys(chat.sessions).length;
+    if (count > 0) {
+      chat.sessions = {};
+      void this.save();
+    }
+    return count;
+  }
+
+  chatSessionCount() {
+    return Object.values(this.state.chats).reduce((sum, chat) => sum + Object.keys(chat.sessions).length, 0);
   }
 
   listProjects() {
@@ -184,9 +240,22 @@ export class StateStore {
       void this.save();
     }
   }
+
+  private ensureChat(chatId: string): PersistedState["chats"][string] {
+    const previous = this.state.chats[chatId];
+    if (previous) return previous;
+
+    const chat: PersistedState["chats"][string] = { sessions: {} };
+    this.state.chats[chatId] = chat;
+    return chat;
+  }
 }
 
 export function normalizeProjectName(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function normalizeProviderName(name: string) {
   return name.trim().toLowerCase();
 }
 

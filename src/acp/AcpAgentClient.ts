@@ -62,7 +62,40 @@ export class AcpAgentClient {
     });
     this.sessionCwds.set(session.sessionId, cwd);
 
-    return { sessionId: session.sessionId, cwd };
+    return { sessionId: session.sessionId, cwd, source: "new" };
+  }
+
+  async resumeSession(session: AgentSession): Promise<AgentSession> {
+    await this.start();
+    const connection = this.requireConnection();
+    const source = this.agentCapabilities?.sessionCapabilities?.resume ? "resumed" : this.agentCapabilities?.loadSession ? "loaded" : undefined;
+    if (!source) {
+      throw new Error(`Agent "${this.provider.name}" does not support session resume or load.`);
+    }
+
+    if (source === "resumed") {
+      await connection.resumeSession({
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        mcpServers: [],
+      });
+    } else {
+      await connection.loadSession({
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        mcpServers: [],
+      });
+    }
+
+    this.sessionCwds.set(session.sessionId, session.cwd);
+    this.logger.info("resumed acp session", {
+      provider: this.provider.name,
+      sessionId: session.sessionId,
+      cwd: session.cwd,
+      source,
+    });
+
+    return { ...session, source };
   }
 
   async prompt(session: AgentSession, prompt: AgentPromptContent, options: AgentPromptOptions = {}): Promise<AgentTurn> {

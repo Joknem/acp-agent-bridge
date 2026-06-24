@@ -71,6 +71,7 @@ const report = await runDoctor({
   state: {
     projects: 2,
     bindings: 1,
+    chatSessions: 1,
     processedMessages: 3,
   },
   chat: {
@@ -80,6 +81,9 @@ const report = await runDoctor({
     currentCwd: dir,
     queued: 0,
     activeTurnId: "feishu-mabc-1",
+    sessionId: "session-a",
+    sessionSource: "resumed",
+    sessionPersisted: true,
   },
   platform: {
     feishu: [{ status: "ok", label: "凭证实时检查", detail: "通过" }],
@@ -95,6 +99,8 @@ assert(formatted.includes("FAIL"));
 assert(formatted.includes("Gateway"));
 assert(formatted.includes("当前聊天"));
 assert(formatted.includes("feishu-mabc-1"));
+assert(formatted.includes("session-a"));
+assert(formatted.includes("持久化 session"));
 
 const agentOnly = await runDoctor({
   config,
@@ -102,6 +108,7 @@ const agentOnly = await runDoctor({
   state: {
     projects: 0,
     bindings: 0,
+    chatSessions: 0,
     processedMessages: 0,
   },
   scope: "agent",

@@ -762,6 +762,7 @@ export class FeishuBot {
   private renderStatus(chatId: string, chatType?: string) {
     const currentProvider = this.agentManager.currentProvider(chatId);
     const currentCwd = this.agentManager.currentCwd(chatId);
+    const sessionInfo = this.agentManager.currentSessionInfo(chatId);
     const currentAgent = this.agentManager.listProviders().find((provider) => provider.name === currentProvider);
     const providerQueue = this.agentManager.providerQueueStatus(currentProvider);
     const projects = this.stateStore.listProjects();
@@ -784,6 +785,8 @@ export class FeishuBot {
       binding?.projectName ? `绑定项目：\`${binding.projectName}\`` : undefined,
       `当前 agent：\`${currentProvider}\``,
       `当前 cwd：\`${currentCwd}\``,
+      sessionInfo.sessionId ? `当前 session：\`${sessionInfo.sessionId}\`` : "当前 session：`未创建`",
+      sessionInfo.sessionId ? `session 状态：\`${renderSessionStatus(sessionInfo.source, sessionInfo.persisted)}\`` : undefined,
       currentAgent ? `agent 命令：\`${[currentAgent.command, ...currentAgent.args].join(" ")}\`` : undefined,
       `默认 agent：\`${this.config.acp.defaultAgent}\``,
       `ACP 超时：\`${this.config.acp.promptTimeoutMs}ms\``,
@@ -799,6 +802,7 @@ export class FeishuBot {
       `状态文件：\`${this.config.stateFile}\``,
       `项目别名数：\`${projects.length}\``,
       `群聊绑定数：\`${bindings.length}\``,
+      `持久化 session：\`${this.stateStore.chatSessionCount()}\``,
       `消息去重缓存：\`${this.stateStore.processedMessageCount()}\``,
       "",
       "常用命令：",
@@ -1267,12 +1271,14 @@ export class FeishuBot {
     return {
       projects: this.stateStore.listProjects().length,
       bindings: this.stateStore.listBindings().length,
+      chatSessions: this.stateStore.chatSessionCount(),
       processedMessages: this.stateStore.processedMessageCount(),
     };
   }
 
   private doctorChat(chatId: string, chatType?: string): DoctorChat {
     const state = this.getChatState(chatId);
+    const sessionInfo = this.agentManager.currentSessionInfo(chatId);
     return {
       chatId,
       chatType,
@@ -1282,6 +1288,9 @@ export class FeishuBot {
       pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
       activeTurnId: state.activeTurn?.turnId,
       activeText: state.activeTurn ? truncate(state.activeTurn.text, 120) : undefined,
+      sessionId: sessionInfo.sessionId,
+      sessionSource: sessionInfo.source,
+      sessionPersisted: sessionInfo.persisted,
       binding: this.stateStore.getBinding(chatId),
     };
   }
@@ -1434,6 +1443,10 @@ function formatDuration(milliseconds: number) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return minutes ? `${minutes}m${seconds.toString().padStart(2, "0")}s` : `${seconds}s`;
+}
+
+function renderSessionStatus(source: string | undefined, persisted: boolean) {
+  return [...new Set([source ?? "unknown", persisted ? "persisted" : undefined].filter(Boolean))].join(", ");
 }
 
 function isGroupChat(chatType?: string) {

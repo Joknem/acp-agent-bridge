@@ -3,7 +3,7 @@ import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
 import { AsyncSerialQueue } from "../utils/AsyncSerialQueue.js";
 import { AcpAgentClient } from "./AcpAgentClient.js";
-import type { AcpAgentProvider, AgentPromptContent, AgentPromptOptions, AgentSession, AgentTurn } from "./types.js";
+import type { AcpAgentProvider, AgentPromptContent, AgentPromptOptions, AgentSession, AgentSessionInfo, AgentTurn } from "./types.js";
 
 type ChatAgentState = {
   providerName: string;
@@ -56,22 +56,31 @@ export class AgentManager {
     state.cwd = cwd;
     state.sessions.clear();
     this.stateStore.setChat(chatId, { cwd });
-    this.logger.info("switched chat cwd", { chatId, cwd });
+    const clearedSessions = this.stateStore.clearChatSessions(chatId);
+    this.logger.info("switched chat cwd", { chatId, cwd, clearedSessions });
   }
 
   async switchProvider(chatId: string, providerName: string) {
     const normalized = providerName.toLowerCase();
-    const client = this.getClient(normalized);
     const state = this.getChatState(chatId);
+    const previousProvider = state.providerName;
 
-    await client.start();
     state.providerName = normalized;
-    state.sessions.delete(normalized);
-    state.sessions.set(normalized, await client.newSession(state.cwd));
-    this.stateStore.setChat(chatId, { providerName: normalized });
+    try {
+      const session = await this.ensureSession(chatId, normalized);
+      this.stateStore.setChat(chatId, { providerName: normalized });
+      this.logger.info("switched chat agent", {
+        chatId,
+        provider: normalized,
+        sessionId: session.sessionId,
+        sessionSource: session.source,
+      });
 
-    this.logger.info("switched chat agent", { chatId, provider: normalized });
-    return normalized;
+      return normalized;
+    } catch (error: unknown) {
+      state.providerName = previousProvider;
+      throw error;
+    }
   }
 
   async prompt(chatId: string, prompt: AgentPromptContent, options: AgentPromptOptions = {}): Promise<AgentTurn> {
@@ -85,6 +94,23 @@ export class AgentManager {
     return this.getPromptQueue(providerName.toLowerCase()).status();
   }
 
+  currentSessionInfo(chatId: string): AgentSessionInfo {
+    const state = this.getChatState(chatId);
+    const runtimeSession = state.sessions.get(state.providerName);
+    const persistedSession = this.stateStore.getChatSession(chatId, state.providerName);
+
+    return {
+      providerName: state.providerName,
+      cwd: state.cwd,
+      sessionId: runtimeSession?.sessionId ?? persistedSession?.sessionId,
+      source: runtimeSession?.source ?? (persistedSession ? "persisted" : undefined),
+      persisted: Boolean(persistedSession),
+      persistedCwd: persistedSession?.cwd,
+      persistedUpdatedAt: persistedSession?.updatedAt,
+      persistedResumedAt: persistedSession?.resumedAt,
+    };
+  }
+
   private async promptDirect(
     chatId: string,
     providerName: string,
@@ -93,17 +119,13 @@ export class AgentManager {
   ): Promise<AgentTurn> {
     const state = this.getChatState(chatId);
     const client = this.getClient(providerName);
-    let session = state.sessions.get(providerName);
-
-    if (!session || session.cwd !== state.cwd) {
-      session = await client.newSession(state.cwd);
-      state.sessions.set(providerName, session);
-    }
+    const session = await this.ensureSession(chatId, providerName);
 
     try {
       return await client.prompt(session, prompt, options);
     } catch (error: unknown) {
       state.sessions.delete(providerName);
+      this.stateStore.deleteChatSession(chatId, providerName);
       this.logger.warn("cleared chat agent session after prompt failure", {
         turnId: options.turnId,
         chatId,
@@ -128,6 +150,7 @@ export class AgentManager {
   async reset(chatId: string) {
     const state = this.getChatState(chatId);
     const session = state.sessions.get(state.providerName);
+    const persisted = this.stateStore.getChatSession(chatId, state.providerName);
     if (session) {
       await this.getClient(state.providerName).cancelSession(session).catch((error: unknown) => {
         this.logger.warn("failed to cancel session during reset", error instanceof Error ? error.message : String(error));
@@ -135,14 +158,16 @@ export class AgentManager {
     }
 
     state.sessions.delete(state.providerName);
+    this.stateStore.deleteChatSession(chatId, state.providerName);
     this.logger.info("reset chat agent session", {
       chatId,
       provider: state.providerName,
       cwd: state.cwd,
-      sessionId: session?.sessionId,
+      sessionId: session?.sessionId ?? persisted?.sessionId,
+      persisted: Boolean(persisted),
     });
 
-    return Boolean(session);
+    return Boolean(session || persisted);
   }
 
   clearSessionsForProvider(providerName: string) {
@@ -180,6 +205,68 @@ export class AgentManager {
     }
 
     return queue;
+  }
+
+  private async ensureSession(chatId: string, providerName: string): Promise<AgentSession> {
+    const state = this.getChatState(chatId);
+    const runtimeSession = state.sessions.get(providerName);
+    if (runtimeSession?.cwd === state.cwd) {
+      return runtimeSession;
+    }
+
+    if (runtimeSession) {
+      state.sessions.delete(providerName);
+    }
+
+    const client = this.getClient(providerName);
+    const persistedSession = this.stateStore.getChatSession(chatId, providerName);
+    if (persistedSession && persistedSession.cwd !== state.cwd) {
+      this.stateStore.deleteChatSession(chatId, providerName);
+    } else if (persistedSession) {
+      try {
+        const session = await client.resumeSession({
+          sessionId: persistedSession.sessionId,
+          cwd: persistedSession.cwd,
+        });
+        state.sessions.set(providerName, session);
+        this.stateStore.setChatSession(chatId, providerName, {
+          sessionId: session.sessionId,
+          cwd: session.cwd,
+          resumed: true,
+        });
+        this.logger.info("resumed persisted chat session", {
+          chatId,
+          provider: providerName,
+          cwd: session.cwd,
+          sessionId: session.sessionId,
+          source: session.source,
+        });
+        return session;
+      } catch (error: unknown) {
+        this.stateStore.deleteChatSession(chatId, providerName);
+        this.logger.warn("failed to resume persisted chat session, creating a new one", {
+          chatId,
+          provider: providerName,
+          cwd: persistedSession.cwd,
+          sessionId: persistedSession.sessionId,
+          message: errorMessage(error),
+        });
+      }
+    }
+
+    const session = await client.newSession(state.cwd);
+    state.sessions.set(providerName, session);
+    this.stateStore.setChatSession(chatId, providerName, {
+      sessionId: session.sessionId,
+      cwd: session.cwd,
+    });
+    this.logger.info("created chat agent session", {
+      chatId,
+      provider: providerName,
+      cwd: session.cwd,
+      sessionId: session.sessionId,
+    });
+    return session;
   }
 
   private getChatState(chatId: string) {

@@ -387,6 +387,7 @@ export class QqBot {
 
   private renderStatus(chatId: string, state: ChatState) {
     const currentProvider = this.agentManager.currentProvider(chatId);
+    const sessionInfo = this.agentManager.currentSessionInfo(chatId);
     const providerQueue = this.agentManager.providerQueueStatus(currentProvider);
     const queueStatus = state.queue.status();
     return [
@@ -398,6 +399,8 @@ export class QqBot {
       `当前 agent：${currentProvider}`,
       `当前 agent 全局队列：${providerQueue.active ? "处理中" : "空闲"}，等待 ${providerQueue.queued}`,
       `当前 cwd：${this.agentManager.currentCwd(chatId)}`,
+      sessionInfo.sessionId ? `当前 session：${sessionInfo.sessionId}` : "当前 session：未创建",
+      sessionInfo.sessionId ? `session 状态：${renderSessionStatus(sessionInfo.source, sessionInfo.persisted)}` : undefined,
       `消息合并窗口：${this.config.qq.messageMergeWindowMs}ms`,
       `消息去重缓存：${this.stateStore.processedMessageCount()}`,
       "",
@@ -614,11 +617,13 @@ export class QqBot {
     return {
       projects: this.stateStore.listProjects().length,
       bindings: this.stateStore.listBindings().length,
+      chatSessions: this.stateStore.chatSessionCount(),
       processedMessages: this.stateStore.processedMessageCount(),
     };
   }
 
   private doctorChat(chatId: string, chatType: string, state: ChatState): DoctorChat {
+    const sessionInfo = this.agentManager.currentSessionInfo(chatId);
     return {
       chatId,
       chatType,
@@ -628,6 +633,9 @@ export class QqBot {
       pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
       activeTurnId: state.activeTurn?.turnId,
       activeText: state.activeTurn ? truncate(state.activeTurn.text, 120) : undefined,
+      sessionId: sessionInfo.sessionId,
+      sessionSource: sessionInfo.source,
+      sessionPersisted: sessionInfo.persisted,
       binding: this.stateStore.getBinding(chatId),
     };
   }
@@ -678,6 +686,10 @@ function formatDuration(milliseconds: number) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return minutes ? `${minutes}m${seconds.toString().padStart(2, "0")}s` : `${seconds}s`;
+}
+
+function renderSessionStatus(source: string | undefined, persisted: boolean) {
+  return [...new Set([source ?? "unknown", persisted ? "persisted" : undefined].filter(Boolean))].join(", ");
 }
 
 function errorMessage(error: unknown) {

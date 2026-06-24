@@ -24,6 +24,14 @@ await fs.writeFile(
       chat_a: {
         providerName: "codex",
         cwd: "/tmp/project-a",
+        sessions: {
+          codex: {
+            sessionId: "session-a",
+            cwd: "/tmp/project-a",
+            createdAt: 100,
+            updatedAt: 200,
+          },
+        },
       },
     },
     projects: {
@@ -38,7 +46,38 @@ await store.load();
 
 assert.deepEqual(store.listBindings(), []);
 assert.equal(store.getChat("chat_a")?.providerName, "codex");
+assert.equal(store.getChatSession("chat_a", "CODEX")?.sessionId, "session-a");
+assert.equal(store.chatSessionCount(), 1);
 assert.equal(store.getProject("ACP"), "/tmp/acp-create");
+
+store.setChatSession("chat_a", "codex", {
+  sessionId: "session-b",
+  cwd: "/tmp/project-a",
+  resumed: true,
+});
+await store.flush();
+
+const resumedSession = store.getChatSession("chat_a", "codex");
+assert.equal(resumedSession?.sessionId, "session-b");
+assert.equal(resumedSession?.createdAt, 100);
+assert.equal(typeof resumedSession?.resumedAt, "number");
+assert.equal(store.deleteChatSession("chat_a", "kimi"), false);
+assert.equal(store.deleteChatSession("chat_a", "codex"), true);
+assert.equal(store.chatSessionCount(), 0);
+
+store.setChatSession("chat_a", "codex", {
+  sessionId: "session-c",
+  cwd: "/tmp/project-a",
+});
+store.setChatSession("chat_b", "kimi", {
+  sessionId: "session-d",
+  cwd: "/tmp/project-b",
+});
+await store.flush();
+assert.equal(store.chatSessionCount(), 2);
+assert.equal(store.clearChatSessions("chat_a"), 1);
+assert.equal(store.clearChatSessions("missing"), 0);
+assert.equal(store.chatSessionCount(), 1);
 
 store.setBinding("group_a", {
   cwd: "/tmp/acp-create",

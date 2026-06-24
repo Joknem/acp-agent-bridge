@@ -15,12 +15,24 @@ export type AgentTurn = {
 export type AgentSession = {
   sessionId: string;
   cwd: string;
+  source?: "new" | "resumed" | "loaded";
 };
 
 export type AcpAgentProvider = {
   name: string;
   command: string;
   args: string[];
+};
+
+export type AgentSessionInfo = {
+  providerName: string;
+  cwd: string;
+  sessionId?: string;
+  source?: AgentSession["source"] | "persisted";
+  persisted: boolean;
+  persistedCwd?: string;
+  persistedUpdatedAt?: number;
+  persistedResumedAt?: number;
 };
 
 export type AgentPromptOptions = {

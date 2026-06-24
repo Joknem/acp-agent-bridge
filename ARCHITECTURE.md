@@ -60,15 +60,15 @@ The next good extraction is durable ACP session resume, so service restarts can 
 - `src/acp/AgentManager.ts`
 - `src/acp/AcpAgentClient.ts`
 
-`AgentManager` owns provider selection, chat cwd, ACP session lifecycle, and per-provider prompt queues. A provider queue prevents two chats from concurrently prompting the same ACP process.
+`AgentManager` owns provider selection, chat cwd, ACP session lifecycle, persisted session resume, and per-provider prompt queues. A provider queue prevents two chats from concurrently prompting the same ACP process.
 
-`AcpAgentClient` owns one ACP provider process and handles ACP protocol initialization, prompt calls, session updates, permission requests, cwd-bound file access, cancellation, and timeout handling.
+`AcpAgentClient` owns one ACP provider process and handles ACP protocol initialization, prompt calls, session resume/load, session updates, permission requests, cwd-bound file access, cancellation, and timeout handling.
 
 ### State
 
 - `src/state/StateStore.ts`
 
-Persisted state includes per-chat provider/cwd, project aliases, group bindings, and processed message IDs for event dedupe. ACP session IDs are currently in-memory and are not restored after service restart.
+Persisted state includes per-chat provider/cwd, per-chat/provider ACP session IDs, project aliases, group bindings, and processed message IDs for event dedupe. When a chat/provider/cwd has a saved session and the agent supports `session/resume` or `session/load`, the next prompt resumes it; cwd changes and `/reset` clear saved sessions.
 
 ### Rendering
 
