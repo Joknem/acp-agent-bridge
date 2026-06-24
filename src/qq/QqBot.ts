@@ -10,6 +10,7 @@ import {
   renderStatus,
   renderUnknownCommand,
 } from "../core/CommandRenderers.js";
+import { formatCommandForDisplay } from "../core/CommandRedaction.js";
 import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import { ReplyAdapter } from "../core/ReplyAdapter.js";
@@ -446,7 +447,7 @@ export class QqBot {
       currentCwd: this.agentManager.currentCwd(chatId),
       session: sessionInfo,
       lastFailure: state.lastFailure,
-      currentAgentCommand: currentAgent ? [currentAgent.command, ...currentAgent.args].join(" ") : undefined,
+      currentAgentCommand: currentAgent ? formatCommandForDisplay(currentAgent.command, currentAgent.args) : undefined,
       defaultAgent: this.config.acp.defaultAgent,
       acpTimeoutMs: this.config.acp.promptTimeoutMs,
       messageMergeWindowMs: this.config.qq.messageMergeWindowMs,

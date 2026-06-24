@@ -34,6 +34,7 @@ They should not grow generic agent-flow behavior when the behavior can be shared
 - `src/core/NormalizedMessage.ts`
 - `src/core/MessageBatcher.ts`
 - `src/core/ConversationQueue.ts`
+- `src/core/CommandRedaction.ts`
 - `src/core/CommandRouter.ts`
 - `src/core/CommandRenderers.ts`
 - `src/core/IncomingMessagePipeline.ts`
@@ -48,6 +49,7 @@ This layer is platform-neutral. It is the beginning of a shared pipeline inspire
 - `NormalizedMessage` is the common shape for future Feishu/QQ/other-platform inputs.
 - `MessageBatcher` merges adjacent ordinary messages before a prompt is created.
 - `ConversationQueue` serializes ordinary work inside one chat/conversation.
+- `CommandRedaction` redacts sensitive command args before they are shown in chat replies or routine logs.
 - `CommandRouter` parses slash commands once and lets adapters register platform-specific command handlers.
 - `IncomingMessagePipeline` coordinates batching, queueing, and batch error handling for ordinary platform messages.
 - `Doctor` runs platform-neutral configuration, state, agent, and chat diagnostics that adapters can expose through commands.

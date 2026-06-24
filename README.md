@@ -175,6 +175,7 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 ```
 
 `/agent` 会显示当前聊天使用的 agent 和所有可用 agent。每个飞书聊天可以独立切换；切换时会为目标 agent 创建新的 ACP session。如果当前聊天有任务正在运行，切换 agent 会先请求取消当前任务。
+聊天里展示的 agent command/args 会自动脱敏，明显的 token、key、secret、password 等参数会显示为 `<redacted>`。
 
 `/cwd` 会显示当前聊天的工作目录。`/cwd <absolute-path>` 会只切换当前飞书聊天的工作目录，并清空该聊天已有的 agent session；下一条普通消息会在新目录下创建 session。不同飞书聊天互不影响。如果当前聊天有任务正在运行，切换 cwd 会先请求取消当前任务。
 
@@ -271,6 +272,7 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 ```
 
 `/doctor` 会检查默认 cwd、状态文件可读写性、agent 命令是否可执行、Codex model/reasoning 参数、飞书/QQ 配置和当前聊天队列/绑定状态。飞书侧会额外做飞书凭证实时检查；QQ 侧会额外显示 QQ Gateway WebSocket 状态。
+`/doctor agent` 只展示可诊断的 model/reasoning 摘要，不输出完整 agent args。
 
 ## Runtime Controls
 

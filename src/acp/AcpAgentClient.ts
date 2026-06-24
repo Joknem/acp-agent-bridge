@@ -13,6 +13,7 @@ import type {
   WriteTextFileRequest,
 } from "@agentclientprotocol/sdk";
 import type { AppConfig } from "../config.js";
+import { redactCommandArgs } from "../core/CommandRedaction.js";
 import type { Logger } from "../logger.js";
 import { resolveInsideRoot } from "../utils/pathSafety.js";
 import { truncate } from "../utils/text.js";
@@ -265,7 +266,7 @@ export class AcpAgentClient {
     this.logger.info("connected to acp agent", {
       provider: this.provider.name,
       command: this.provider.command,
-      args: this.provider.args,
+      args: redactCommandArgs(this.provider.args),
       protocolVersion: result.protocolVersion,
       capabilities: result.agentCapabilities,
     });

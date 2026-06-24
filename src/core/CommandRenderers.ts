@@ -1,5 +1,6 @@
 import type { AcpAgentProvider, AgentSessionInfo } from "../acp/types.js";
 import { truncate } from "../utils/text.js";
+import { formatCommandForDisplay } from "./CommandRedaction.js";
 import type { QueueStatusSnapshot, QueueTaskSnapshot } from "./QueueSnapshot.js";
 import { renderFailureSummary, type TurnFailure } from "./TurnFailure.js";
 
@@ -163,7 +164,7 @@ export function renderAgentList(options: RenderAgentListOptions) {
       .filter(Boolean)
       .join(", ");
     const suffix = marks ? ` (${marks})` : "";
-    return `- ${code(provider.name, options.mode)}${suffix}: ${code([provider.command, ...provider.args].join(" "), options.mode)}`;
+    return `- ${code(provider.name, options.mode)}${suffix}: ${code(formatCommandForDisplay(provider.command, provider.args), options.mode)}`;
   });
 
   return [

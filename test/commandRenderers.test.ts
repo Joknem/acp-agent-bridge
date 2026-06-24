@@ -26,14 +26,15 @@ function testAgentList() {
     currentProvider: "codex",
     currentCwd: "/repo",
     providers: [
-      { name: "codex", command: "codex", args: ["--model", "gpt-5"], isDefault: true, isRunning: true },
+      { name: "codex", command: "codex", args: ["--model", "gpt-5", "--api-key", "sk-live-secretsecret"], isDefault: true, isRunning: true },
       { name: "kimi", command: "kimi", args: [], isDefault: false, isRunning: false },
     ],
     shortcuts: [{ label: "切换 agent", command: "/agent <name>" }],
   });
 
   assert(rendered.includes("当前 agent：`codex`"));
-  assert(rendered.includes("- `codex` (current, default, running): `codex --model gpt-5`"));
+  assert(rendered.includes("- `codex` (current, default, running): `codex --model gpt-5 --api-key <redacted>`"));
+  assert(!rendered.includes("sk-live-secretsecret"));
   assert(rendered.includes("切换 agent：`/agent <name>`"));
 }
 
@@ -71,7 +72,7 @@ function testStatus() {
       turnId: "turn-0",
       provider: "codex",
     },
-    currentAgentCommand: "codex --model gpt-5",
+    currentAgentCommand: "codex --model gpt-5 --token <redacted>",
     defaultAgent: "codex",
     acpTimeoutMs: 600_000,
     messageMergeWindowMs: 2_000,
@@ -94,6 +95,7 @@ function testStatus() {
   assert(rendered.includes("session 状态：`persisted`"));
   assert(rendered.includes("`最近失败：timeout`"));
   assert(rendered.includes("消息去重缓存：`8`"));
+  assert(rendered.includes("agent 命令：`codex --model gpt-5 --token <redacted>`"));
 }
 
 function testQueue() {

@@ -23,7 +23,7 @@ const config = {
       {
         name: "codex",
         command: process.execPath,
-        args: ["-c", 'model="gpt-5.5"', "-c", 'model_reasoning_effort="high"'],
+        args: ["-c", 'model="gpt-5.5"', "-c", 'model_reasoning_effort="high"', "--api-key", "sk-live-secretsecret"],
       },
       {
         name: "missing",
@@ -104,6 +104,7 @@ const report = await runDoctor({
 const formatted = formatDoctorReport(report);
 assert(formatted.includes("model=gpt-5.5"));
 assert(formatted.includes("reasoning=high"));
+assert(!formatted.includes("sk-live-secretsecret"));
 assert(formatted.includes("definitely-not-a-real-command"));
 assert(formatted.includes("FAIL"));
 assert(formatted.includes("Gateway"));
