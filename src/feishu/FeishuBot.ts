@@ -4,8 +4,7 @@ import path from "node:path";
 import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
-import { ConversationQueue } from "../core/ConversationQueue.js";
-import { MessageBatcher } from "../core/MessageBatcher.js";
+import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import { markdownToLarkCards, shouldUseLarkCard, type LarkCardContent } from "./larkCard.js";
 import { markdownToLarkPost, type LarkPostContent } from "../markdown/larkPost.js";
 import { parseIncomingFeishuMessage, type IncomingFeishuMessage } from "./incomingMessage.js";
@@ -67,10 +66,8 @@ type FeishuCommandContext = {
   chatType?: string;
 };
 
-type ChatState = {
-  queue: ConversationQueue;
+type ChatState = IncomingPipelineState<PendingIncoming> & {
   activeTurn?: ActiveTurn;
-  pendingBatcher?: MessageBatcher<PendingIncoming>;
   lastQueueNoticeAt?: number;
   lastBindNoticeAt?: number;
 };
@@ -82,6 +79,7 @@ export class FeishuBot {
   private readonly client: lark.Client;
   private readonly wsClient: lark.WSClient;
   private readonly commandRouter: CommandRouter<FeishuCommandContext>;
+  private readonly incomingPipeline: IncomingMessagePipeline<PendingIncoming>;
   private readonly chats = new Map<string, ChatState>();
 
   constructor(
@@ -102,6 +100,7 @@ export class FeishuBot {
       loggerLevel: mapLogLevel(config.logLevel),
     });
     this.commandRouter = this.createCommandRouter();
+    this.incomingPipeline = this.createIncomingPipeline();
   }
 
   start() {
@@ -130,6 +129,34 @@ export class FeishuBot {
       .register("ping", async (_command, context) => this.handlePingCommand(context.chatId))
       .register("cancel", async (_command, context) => this.handleCancelCommand(context.chatId))
       .register("reset", async (_command, context) => this.handleResetCommand(context.chatId));
+  }
+
+  private createIncomingPipeline() {
+    return new IncomingMessagePipeline<PendingIncoming>({
+      mergeWindowMs: this.config.messageMergeWindowMs,
+      summarize: summarizeIncomingBatch,
+      onBatchQueued: (event) => {
+        this.logger.info("queued feishu message batch", {
+          chatId: event.chatId,
+          messages: event.items.length,
+          text: truncate(event.summary, 120),
+        });
+      },
+      processBatch: async (event) => {
+        const chatType = lastDefined(event.items.map((item) => item.chatType));
+        await this.processIncomingBatch(event.chatId, event.items, {
+          ackStates: event.items.flatMap((pending) => (pending.ackState ? [pending.ackState] : [])),
+          chatType,
+        });
+      },
+      onBatchError: async (error, event) => {
+        this.logTurnError(event.chatId, error);
+        await this.sendMarkdown(event.chatId, this.renderTurnError(error), "执行失败").catch(async (sendError: unknown) => {
+          this.logger.error("failed to send error message", errorMessage(sendError));
+          await this.sendText(event.chatId, `执行失败：${errorMessage(error)}`);
+        });
+      },
+    });
   }
 
   private async checkCredentials() {
@@ -215,11 +242,12 @@ export class FeishuBot {
     const state = this.getChatState(message.chat_id);
     await this.maybeNotifyQueuedMessage(message.chat_id, incoming.summary, state);
     const ackState = await this.acknowledgeMergedIncoming(message.chat_id, message.message_id, provider, state);
-    this.scheduleIncomingBatch(message.chat_id, {
+    this.incomingPipeline.schedule(message.chat_id, state, {
       messageId: message.message_id,
       incoming,
       ackState,
-    }, message.chat_type);
+      chatType: message.chat_type,
+    });
   }
 
   private async acknowledgeMergedIncoming(
@@ -233,37 +261,6 @@ export class FeishuBot {
     }
 
     return this.acknowledge(chatId, messageId, provider);
-  }
-
-  private scheduleIncomingBatch(chatId: string, item: PendingIncoming, chatType?: string) {
-    const state = this.getChatState(chatId);
-    state.pendingBatcher ??= new MessageBatcher(this.config.messageMergeWindowMs, (items) => {
-      this.enqueueIncomingBatch(chatId, items);
-    });
-    state.pendingBatcher.add({ ...item, chatType });
-  }
-
-  private flushIncomingBatch(chatId: string) {
-    const state = this.getChatState(chatId);
-    state.pendingBatcher?.flush();
-  }
-
-  private enqueueIncomingBatch(chatId: string, items: PendingIncoming[]) {
-    const state = this.getChatState(chatId);
-    const chatType = lastDefined(items.map((item) => item.chatType));
-    const summary = summarizeIncomingBatch(items);
-    this.logger.info("queued feishu message batch", {
-      chatId,
-      messages: items.length,
-      text: truncate(summary, 120),
-    });
-
-    state.queue.enqueue(async () => {
-      await this.processIncomingBatch(chatId, items, {
-        ackStates: items.flatMap((pending) => (pending.ackState ? [pending.ackState] : [])),
-        chatType,
-      });
-    });
   }
 
   private async processIncoming(
@@ -1103,7 +1100,7 @@ export class FeishuBot {
   private getChatState(chatId: string) {
     let state = this.chats.get(chatId);
     if (!state) {
-      state = { queue: new ConversationQueue() };
+      state = this.incomingPipeline.createState();
       this.chats.set(chatId, state);
     }
 

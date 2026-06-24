@@ -2,8 +2,7 @@ import type { AgentManager } from "../acp/AgentManager.js";
 import type { AgentPromptContent, AgentTurn } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
-import { ConversationQueue } from "../core/ConversationQueue.js";
-import { MessageBatcher } from "../core/MessageBatcher.js";
+import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
 import { inferImageMimeType, readWebStreamToBuffer } from "../utils/media.js";
@@ -24,10 +23,8 @@ type ActiveTurn = {
   text: string;
 };
 
-type ChatState = {
-  queue: ConversationQueue;
+type ChatState = IncomingPipelineState<QqPromptItem> & {
   activeTurn?: ActiveTurn;
-  pendingBatcher?: MessageBatcher<QqPromptItem>;
 };
 
 type QqCommandContext = {
@@ -52,6 +49,7 @@ export class QqBot {
   private readonly chats = new Map<string, ChatState>();
   private readonly auth: QqAccessTokenProvider;
   private readonly commandRouter: CommandRouter<QqCommandContext>;
+  private readonly incomingPipeline: IncomingMessagePipeline<QqPromptItem>;
 
   constructor(
     private readonly config: AppConfig,
@@ -65,6 +63,7 @@ export class QqBot {
       legacyToken: config.qq.token,
     });
     this.commandRouter = this.createCommandRouter();
+    this.incomingPipeline = this.createIncomingPipeline();
   }
 
   async start() {
@@ -83,13 +82,29 @@ export class QqBot {
       .register(["agent", "agents"], async (command, context) => this.handleAgentCommand(context.message, command));
   }
 
+  private createIncomingPipeline() {
+    return new IncomingMessagePipeline<QqPromptItem>({
+      mergeWindowMs: this.config.qq.messageMergeWindowMs,
+      summarize: summarizeQqBatch,
+      onBatchQueued: (event) => {
+        this.logger.info("queued qq message batch", {
+          chatId: event.chatId,
+          messages: event.items.length,
+          text: truncate(event.summary, 120),
+        });
+      },
+      processBatch: async (event) => {
+        await this.processMessageBatch(event.items, this.getChatState(event.chatId));
+      },
+    });
+  }
+
   stop() {
     this.stopped = true;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     for (const state of this.chats.values()) {
-      state.pendingBatcher?.stop();
-      state.pendingBatcher = undefined;
+      this.incomingPipeline.stop(state);
     }
     this.heartbeatTimer = undefined;
     this.reconnectTimer = undefined;
@@ -239,44 +254,13 @@ export class QqBot {
 
     const state = this.getChatState(message.conversation.chatId);
     if (isImmediateCommand(message)) {
-      this.flushMessageBatch(message.conversation.chatId);
-      this.enqueueMessage(message, state);
+      this.incomingPipeline.enqueueImmediate(message.conversation.chatId, state, async () => {
+        await this.processMessage(message, state);
+      });
       return;
     }
 
-    this.scheduleMessageBatch(message, state);
-  }
-
-  private enqueueMessage(message: QqIncomingMessage, state: ChatState) {
-    state.queue.enqueue(async () => {
-      await this.processMessage(message, state);
-    });
-  }
-
-  private scheduleMessageBatch(message: QqIncomingMessage, state: ChatState) {
-    state.pendingBatcher ??= new MessageBatcher(this.config.qq.messageMergeWindowMs, (items) => {
-      this.enqueueMessageBatch(message.conversation.chatId, items);
-    });
-    state.pendingBatcher.add({ message });
-  }
-
-  private flushMessageBatch(chatId: string) {
-    const state = this.getChatState(chatId);
-    state.pendingBatcher?.flush();
-  }
-
-  private enqueueMessageBatch(chatId: string, items: QqPromptItem[]) {
-    const state = this.getChatState(chatId);
-    const summary = summarizeQqBatch(items);
-    this.logger.info("queued qq message batch", {
-      chatId,
-      messages: items.length,
-      text: truncate(summary, 120),
-    });
-
-    state.queue.enqueue(async () => {
-      await this.processMessageBatch(items, state);
-    });
+    this.incomingPipeline.schedule(message.conversation.chatId, state, { message });
   }
 
   private async processMessage(message: QqIncomingMessage, state: ChatState) {
@@ -506,9 +490,7 @@ export class QqBot {
   private getChatState(chatId: string) {
     let state = this.chats.get(chatId);
     if (!state) {
-      state = {
-        queue: new ConversationQueue(),
-      };
+      state = this.incomingPipeline.createState();
       this.chats.set(chatId, state);
     }
     return state;
