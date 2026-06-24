@@ -84,6 +84,16 @@ const report = await runDoctor({
     sessionId: "session-a",
     sessionSource: "resumed",
     sessionPersisted: true,
+    lastFailure: {
+      turnId: "feishu-failed-1",
+      provider: "codex",
+      cwd: dir,
+      sessionId: "session-b",
+      message: "ACP prompt timeout after 1000ms",
+      failedAt: 1_000,
+      timedOut: true,
+      timeoutMs: 1_000,
+    },
   },
   platform: {
     feishu: [{ status: "ok", label: "凭证实时检查", detail: "通过" }],
@@ -101,6 +111,8 @@ assert(formatted.includes("当前聊天"));
 assert(formatted.includes("feishu-mabc-1"));
 assert(formatted.includes("session-a"));
 assert(formatted.includes("持久化 session"));
+assert(formatted.includes("feishu-failed-1"));
+assert(formatted.includes("ACP prompt timeout"));
 
 const agentOnly = await runDoctor({
   config,

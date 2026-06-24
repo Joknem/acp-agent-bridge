@@ -140,17 +140,37 @@ export class AcpAgentClient {
         stopReason: response.stopReason,
       };
     } catch (error: unknown) {
-      if (errorMessage(error).startsWith("ACP prompt timeout")) {
-        await this.cancelSession(session).catch((cancelError: unknown) => {
-          this.logger.warn("failed to cancel timed out acp prompt", errorMessage(cancelError));
-        });
+      const message = errorMessage(error);
+      const timedOut = isPromptTimeout(message);
+      let cancelAfterTimeout: "succeeded" | "failed" | "not_attempted" | undefined;
+      let cancelErrorMessage: string | undefined;
+
+      if (timedOut) {
+        cancelAfterTimeout = "not_attempted";
+        try {
+          await this.cancelSession(session);
+          cancelAfterTimeout = "succeeded";
+        } catch (cancelError: unknown) {
+          cancelAfterTimeout = "failed";
+          cancelErrorMessage = errorMessage(cancelError);
+          this.logger.warn("failed to cancel timed out acp prompt", {
+            turnId: options.turnId,
+            provider: this.provider.name,
+            sessionId: session.sessionId,
+            message: cancelErrorMessage,
+          });
+        }
       }
 
-      throw new AgentPromptError(errorMessage(error), {
+      throw new AgentPromptError(message, {
         provider: this.provider.name,
         cwd: session.cwd,
         sessionId: session.sessionId,
         turnId: options.turnId,
+        timedOut,
+        timeoutMs: timedOut ? this.config.acp.promptTimeoutMs : undefined,
+        cancelAfterTimeout,
+        cancelError: cancelErrorMessage,
         recentStderr: this.stderrTail,
       });
     } finally {
@@ -408,6 +428,10 @@ export class AcpAgentClient {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isPromptTimeout(message: string) {
+  return message.startsWith("ACP prompt timeout");
 }
 
 function contentToMarkdown(content: ContentBlock): string {

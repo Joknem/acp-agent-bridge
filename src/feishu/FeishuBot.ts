@@ -8,6 +8,7 @@ import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from ".
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import { ReplyAdapter } from "../core/ReplyAdapter.js";
 import { createTurnId } from "../core/TurnId.js";
+import { createTurnFailure, renderFailureSummary, type TurnFailure } from "../core/TurnFailure.js";
 import { markdownToLarkCards, shouldUseLarkCard, type LarkCardContent } from "./larkCard.js";
 import { markdownToLarkPost, type LarkPostContent } from "../markdown/larkPost.js";
 import { parseIncomingFeishuMessage, type IncomingFeishuMessage } from "./incomingMessage.js";
@@ -72,6 +73,7 @@ type FeishuCommandContext = {
 
 type ChatState = IncomingPipelineState<PendingIncoming> & {
   activeTurn?: ActiveTurn;
+  lastFailure?: TurnFailure;
   lastQueueNoticeAt?: number;
   lastBindNoticeAt?: number;
 };
@@ -375,6 +377,12 @@ export class FeishuBot {
         return;
       }
 
+      state.lastFailure = createTurnFailure(error, {
+        turnId,
+        provider,
+        cwd,
+        text: summary,
+      });
       throw error;
     } finally {
       if (state.activeTurn === activeTurn) {
@@ -787,6 +795,7 @@ export class FeishuBot {
       `当前 cwd：\`${currentCwd}\``,
       sessionInfo.sessionId ? `当前 session：\`${sessionInfo.sessionId}\`` : "当前 session：`未创建`",
       sessionInfo.sessionId ? `session 状态：\`${renderSessionStatus(sessionInfo.source, sessionInfo.persisted)}\`` : undefined,
+      state.lastFailure ? renderStatusFailure(state.lastFailure) : undefined,
       currentAgent ? `agent 命令：\`${[currentAgent.command, ...currentAgent.args].join(" ")}\`` : undefined,
       `默认 agent：\`${this.config.acp.defaultAgent}\``,
       `ACP 超时：\`${this.config.acp.promptTimeoutMs}ms\``,
@@ -1236,6 +1245,10 @@ export class FeishuBot {
         `agent：\`${error.details.provider}\``,
         `cwd：\`${error.details.cwd}\``,
         `session：\`${error.details.sessionId}\``,
+        error.details.timedOut ? `timeout：\`${error.details.timeoutMs}ms\`` : undefined,
+        error.details.cancelAfterTimeout ? `timeout cancel：\`${renderCancelStatus(error.details.cancelAfterTimeout)}\`` : undefined,
+        error.details.cancelError ? `cancel error：\`${error.details.cancelError}\`` : undefined,
+        renderRecentStderr(error.details.recentStderr),
         "",
         suggestion,
       ]
@@ -1291,6 +1304,7 @@ export class FeishuBot {
       sessionId: sessionInfo.sessionId,
       sessionSource: sessionInfo.source,
       sessionPersisted: sessionInfo.persisted,
+      lastFailure: state.lastFailure,
       binding: this.stateStore.getBinding(chatId),
     };
   }
@@ -1447,6 +1461,32 @@ function formatDuration(milliseconds: number) {
 
 function renderSessionStatus(source: string | undefined, persisted: boolean) {
   return [...new Set([source ?? "unknown", persisted ? "persisted" : undefined].filter(Boolean))].join(", ");
+}
+
+function renderStatusFailure(failure: TurnFailure) {
+  return renderFailureSummary(failure)
+    .split("\n")
+    .map((line) => `\`${line}\``)
+    .join("\n");
+}
+
+function renderCancelStatus(status: string) {
+  switch (status) {
+    case "succeeded":
+      return "已自动取消";
+    case "failed":
+      return "自动取消失败";
+    case "not_attempted":
+      return "未尝试";
+    default:
+      return status;
+  }
+}
+
+function renderRecentStderr(lines: string[] | undefined) {
+  const recent = lines?.slice(-3) ?? [];
+  if (!recent.length) return undefined;
+  return ["最近 stderr：", ...recent.map((line) => `- \`${truncate(line, 160)}\``)].join("\n");
 }
 
 function isGroupChat(chatType?: string) {

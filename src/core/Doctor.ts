@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AppConfig } from "../config.js";
 import type { AcpAgentProvider } from "../acp/types.js";
+import type { TurnFailure } from "./TurnFailure.js";
 
 export type DoctorScope = "all" | "config" | "agent" | "state" | "feishu" | "qq" | "chat";
 
@@ -39,6 +40,7 @@ export type DoctorChat = {
   sessionId?: string;
   sessionSource?: string;
   sessionPersisted?: boolean;
+  lastFailure?: TurnFailure;
   binding?: {
     cwd: string;
     projectName?: string;
@@ -221,9 +223,14 @@ function buildChatSection(chat: DoctorChat): DoctorSection {
       chat.pendingBatchCount ? ok("正在合并消息", String(chat.pendingBatchCount)) : ok("正在合并消息", "0"),
       chat.activeTurnId ? warn("当前 Turn ID", chat.activeTurnId) : ok("当前 Turn ID", "无"),
       chat.activeText ? warn("当前任务", chat.activeText) : ok("当前任务", "无"),
+      chat.lastFailure ? warn("最近失败", renderDoctorFailure(chat.lastFailure)) : ok("最近失败", "无"),
       chat.binding ? ok("绑定项目", `${chat.binding.projectName ? `${chat.binding.projectName} -> ` : ""}\`${chat.binding.cwd}\``) : warn("绑定项目", "未绑定"),
     ],
   };
+}
+
+function renderDoctorFailure(failure: TurnFailure) {
+  return [failure.turnId, failure.message].filter(Boolean).join("：");
 }
 
 function renderSessionState(source: string | undefined, persisted: boolean | undefined) {

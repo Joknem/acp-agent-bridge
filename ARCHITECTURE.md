@@ -104,3 +104,5 @@ Every ordinary agent prompt gets a `turnId`. Platform adapters store it on the c
 - `/doctor chat` diagnostics
 - `prompting acp agent`, `acp prompt started`, and `acp prompt finished` logs
 - timeout and failure replies sent back to chat
+
+Timeout failures include whether the bridge attempted to cancel the ACP session, whether that cancellation succeeded, and the recent stderr tail from the agent process. Platform adapters retain the most recent unsuppressed failure in memory so `/status` and `/doctor chat` can show the last failed turn.

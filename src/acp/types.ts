@@ -39,6 +39,8 @@ export type AgentPromptOptions = {
   turnId?: string;
 };
 
+export type TimeoutCancelStatus = "succeeded" | "failed" | "not_attempted";
+
 export class AgentPromptError extends Error {
   constructor(
     message: string,
@@ -47,6 +49,10 @@ export class AgentPromptError extends Error {
       cwd: string;
       sessionId: string;
       turnId?: string;
+      timedOut?: boolean;
+      timeoutMs?: number;
+      cancelAfterTimeout?: TimeoutCancelStatus;
+      cancelError?: string;
       recentStderr: string[];
     },
   ) {

@@ -6,6 +6,7 @@ import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from ".
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import { ReplyAdapter } from "../core/ReplyAdapter.js";
 import { createTurnId } from "../core/TurnId.js";
+import { createTurnFailure, renderFailureSummary, type TurnFailure } from "../core/TurnFailure.js";
 import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
 import { inferImageMimeType, readWebStreamToBuffer } from "../utils/media.js";
@@ -31,6 +32,7 @@ type ActiveTurn = {
 
 type ChatState = IncomingPipelineState<QqPromptItem> & {
   activeTurn?: ActiveTurn;
+  lastFailure?: TurnFailure;
 };
 
 type QqCommandContext = {
@@ -329,6 +331,12 @@ export class QqBot {
       const turn = await this.agentManager.prompt(chatId, prompt, { turnId });
       await this.sendTurn(firstMessage.conversation, firstMessage.messageId, turn);
     } catch (error: unknown) {
+      state.lastFailure = createTurnFailure(error, {
+        turnId,
+        provider,
+        cwd,
+        text: summary,
+      });
       this.logTurnError(chatId, activeTurn, error);
       await this.replies.sendMarkdown(replyDestination(firstMessage), this.renderTurnError(error, activeTurn), "执行失败", "error");
     } finally {
@@ -401,6 +409,7 @@ export class QqBot {
       `当前 cwd：${this.agentManager.currentCwd(chatId)}`,
       sessionInfo.sessionId ? `当前 session：${sessionInfo.sessionId}` : "当前 session：未创建",
       sessionInfo.sessionId ? `session 状态：${renderSessionStatus(sessionInfo.source, sessionInfo.persisted)}` : undefined,
+      state.lastFailure ? renderFailureSummary(state.lastFailure) : undefined,
       `消息合并窗口：${this.config.qq.messageMergeWindowMs}ms`,
       `消息去重缓存：${this.stateStore.processedMessageCount()}`,
       "",
@@ -468,7 +477,13 @@ export class QqBot {
         `agent：\`${error.details.provider}\``,
         `cwd：\`${error.details.cwd}\``,
         `session：\`${error.details.sessionId}\``,
-      ].join("\n");
+        error.details.timedOut ? `timeout：\`${error.details.timeoutMs}ms\`` : undefined,
+        error.details.cancelAfterTimeout ? `timeout cancel：\`${renderCancelStatus(error.details.cancelAfterTimeout)}\`` : undefined,
+        error.details.cancelError ? `cancel error：\`${error.details.cancelError}\`` : undefined,
+        renderRecentStderr(error.details.recentStderr),
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join("\n");
     }
 
     return [
@@ -636,6 +651,7 @@ export class QqBot {
       sessionId: sessionInfo.sessionId,
       sessionSource: sessionInfo.source,
       sessionPersisted: sessionInfo.persisted,
+      lastFailure: state.lastFailure,
       binding: this.stateStore.getBinding(chatId),
     };
   }
@@ -690,6 +706,25 @@ function formatDuration(milliseconds: number) {
 
 function renderSessionStatus(source: string | undefined, persisted: boolean) {
   return [...new Set([source ?? "unknown", persisted ? "persisted" : undefined].filter(Boolean))].join(", ");
+}
+
+function renderCancelStatus(status: string) {
+  switch (status) {
+    case "succeeded":
+      return "已自动取消";
+    case "failed":
+      return "自动取消失败";
+    case "not_attempted":
+      return "未尝试";
+    default:
+      return status;
+  }
+}
+
+function renderRecentStderr(lines: string[] | undefined) {
+  const recent = lines?.slice(-3) ?? [];
+  if (!recent.length) return undefined;
+  return ["最近 stderr：", ...recent.map((line) => `- \`${truncate(line, 160)}\``)].join("\n");
 }
 
 function errorMessage(error: unknown) {
