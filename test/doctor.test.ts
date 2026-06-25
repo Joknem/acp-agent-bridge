@@ -75,6 +75,11 @@ const report = await runDoctor({
     bindings: 1,
     chatSessions: 1,
     processedMessages: 3,
+    runtimeChats: 1,
+    runtimeActiveTurns: 1,
+    runtimePendingPermissions: 1,
+    runtimeQueuedMessages: 2,
+    runtimePendingBatches: 1,
   },
   chat: {
     chatId: "chat-a",
@@ -83,6 +88,14 @@ const report = await runDoctor({
     currentCwd: dir,
     queued: 0,
     activeTurnId: "feishu-mabc-1",
+    persistedRuntime: {
+      updatedAt: 170_000,
+      activeTurnId: "feishu-old-1",
+      activeText: "重启前任务",
+      pendingPermission: "Edit file",
+      queued: 2,
+      pendingBatchCount: 1,
+    },
     sessionId: "session-a",
     sessionSource: "resumed",
     sessionPersisted: true,
@@ -108,6 +121,8 @@ assert(formatted.includes("model=gpt-5.5"));
 assert(formatted.includes("reasoning=high"));
 assert(formatted.includes("权限策略"));
 assert(formatted.includes("权限等待"));
+assert(formatted.includes("运行态快照"));
+assert(formatted.includes("重启前运行态"));
 assert(!formatted.includes("sk-live-secretsecret"));
 assert(formatted.includes("definitely-not-a-real-command"));
 assert(formatted.includes("FAIL"));

@@ -37,6 +37,14 @@ export type DoctorChat = {
   pendingBatchCount?: number;
   activeTurnId?: string;
   activeText?: string;
+  persistedRuntime?: {
+    updatedAt: number;
+    activeTurnId?: string;
+    activeText?: string;
+    pendingPermission?: string;
+    queued: number;
+    pendingBatchCount: number;
+  };
   sessionId?: string;
   sessionSource?: string;
   sessionPersisted?: boolean;
@@ -57,6 +65,11 @@ export type DoctorStateStats = {
   bindings: number;
   chatSessions: number;
   processedMessages: number;
+  runtimeChats?: number;
+  runtimeActiveTurns?: number;
+  runtimePendingPermissions?: number;
+  runtimeQueuedMessages?: number;
+  runtimePendingBatches?: number;
 };
 
 export type DoctorInput = {
@@ -170,15 +183,22 @@ async function buildAgentSection(providers: DoctorProvider[], config: AppConfig,
 }
 
 async function buildStateSection(config: AppConfig, state: DoctorStateStats): Promise<DoctorSection> {
+  const items = [
+    await stateFileItem(config.stateFile),
+    ok("项目别名", String(state.projects)),
+    ok("群聊绑定", String(state.bindings)),
+    ok("持久化 session", String(state.chatSessions)),
+    ok("消息去重缓存", String(state.processedMessages)),
+    state.runtimeChats !== undefined ? ok("运行态快照", String(state.runtimeChats)) : undefined,
+    state.runtimeActiveTurns !== undefined ? ok("运行中 turn 快照", String(state.runtimeActiveTurns)) : undefined,
+    state.runtimePendingPermissions !== undefined ? ok("等待权限快照", String(state.runtimePendingPermissions)) : undefined,
+    state.runtimeQueuedMessages !== undefined ? ok("排队消息快照", String(state.runtimeQueuedMessages)) : undefined,
+    state.runtimePendingBatches !== undefined ? ok("消息合并快照", String(state.runtimePendingBatches)) : undefined,
+  ].filter((item): item is DoctorItem => Boolean(item));
+
   return {
     title: "状态文件",
-    items: [
-      await stateFileItem(config.stateFile),
-      ok("项目别名", String(state.projects)),
-      ok("群聊绑定", String(state.bindings)),
-      ok("持久化 session", String(state.chatSessions)),
-      ok("消息去重缓存", String(state.processedMessages)),
-    ],
+    items,
   };
 }
 
@@ -225,10 +245,24 @@ function buildChatSection(chat: DoctorChat): DoctorSection {
       chat.pendingBatchCount ? ok("正在合并消息", String(chat.pendingBatchCount)) : ok("正在合并消息", "0"),
       chat.activeTurnId ? warn("当前 Turn ID", chat.activeTurnId) : ok("当前 Turn ID", "无"),
       chat.activeText ? warn("当前任务", chat.activeText) : ok("当前任务", "无"),
+      chat.persistedRuntime ? warn("重启前运行态", renderPersistedRuntime(chat.persistedRuntime)) : ok("重启前运行态", "无"),
       chat.lastFailure ? warn("最近失败", renderDoctorFailure(chat.lastFailure)) : ok("最近失败", "无"),
       chat.binding ? ok("绑定项目", `${chat.binding.projectName ? `${chat.binding.projectName} -> ` : ""}\`${chat.binding.cwd}\``) : warn("绑定项目", "未绑定"),
     ],
   };
+}
+
+function renderPersistedRuntime(runtime: NonNullable<DoctorChat["persistedRuntime"]>) {
+  return [
+    runtime.activeTurnId ? `turn ${runtime.activeTurnId}` : undefined,
+    runtime.activeText ? runtime.activeText : undefined,
+    runtime.pendingPermission ? `permission ${runtime.pendingPermission}` : undefined,
+    runtime.queued > 0 ? `queued ${runtime.queued}` : undefined,
+    runtime.pendingBatchCount > 0 ? `merging ${runtime.pendingBatchCount}` : undefined,
+    `updated ${new Date(runtime.updatedAt).toISOString()}`,
+  ]
+    .filter(Boolean)
+    .join("，");
 }
 
 function renderDoctorFailure(failure: TurnFailure) {

@@ -6,19 +6,26 @@ export class ConversationQueue {
   private active?: QueueTaskSnapshot;
   private readonly pending: QueueTaskSnapshot[] = [];
 
+  constructor(private readonly onChange?: (status: QueueStatusSnapshot) => void) {}
+
   enqueue(work: () => Promise<void>, metadata: QueueTaskMetadata = {}) {
     const task = createQueueTask(this.nextTaskId++, metadata);
     this.pending.push(task);
+    this.notifyChange();
 
     const result = this.tail
       .catch(() => undefined)
       .then(async () => {
         this.removePending(task.id);
         this.active = { ...task, startedAt: Date.now() };
+        this.notifyChange();
         try {
           await work();
         } finally {
-          if (this.active?.id === task.id) this.active = undefined;
+          if (this.active?.id === task.id) {
+            this.active = undefined;
+            this.notifyChange();
+          }
         }
       });
 
@@ -40,5 +47,9 @@ export class ConversationQueue {
   private removePending(taskId: string) {
     const index = this.pending.findIndex((task) => task.id === taskId);
     if (index >= 0) this.pending.splice(index, 1);
+  }
+
+  private notifyChange() {
+    this.onChange?.(this.status());
   }
 }

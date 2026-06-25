@@ -28,16 +28,69 @@ const chatSchema = z.object({
   sessions: z.record(z.string(), chatSessionSchema).default({}),
 });
 
+const queueTaskSchema = z.object({
+  id: z.string().min(1),
+  kind: z.string().min(1),
+  label: z.string().min(1),
+  summary: z.string().optional(),
+  owner: z.string().optional(),
+  enqueuedAt: z.number().int().nonnegative(),
+  startedAt: z.number().int().nonnegative().optional(),
+});
+
+const queueStatusSchema = z.object({
+  active: queueTaskSchema.optional(),
+  queued: z.number().int().nonnegative(),
+  pending: z.array(queueTaskSchema).default([]),
+});
+
+const runtimeActiveTurnSchema = z.object({
+  turnId: z.string().min(1),
+  provider: z.string().min(1),
+  cwd: z.string().min(1),
+  text: z.string(),
+  startedAt: z.number().int().nonnegative(),
+});
+
+const runtimePermissionSchema = z.object({
+  requestId: z.string().min(1),
+  provider: z.string().min(1),
+  cwd: z.string().min(1),
+  sessionId: z.string().min(1),
+  turnId: z.string().min(1).optional(),
+  toolTitle: z.string().min(1),
+  toolKind: z.string().optional(),
+  expiresAt: z.number().int().nonnegative(),
+  optionCount: z.number().int().nonnegative(),
+});
+
+const chatRuntimeSchema = z.object({
+  platform: z.enum(["feishu", "qq"]).optional(),
+  chatType: z.string().optional(),
+  activeTurn: runtimeActiveTurnSchema.optional(),
+  pendingPermission: runtimePermissionSchema.optional(),
+  pendingBatchCount: z.number().int().nonnegative().default(0),
+  conversationQueue: queueStatusSchema.default({ queued: 0, pending: [] }),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+const runtimeSchema = z.object({
+  chats: z.record(z.string(), chatRuntimeSchema).default({}),
+});
+
 const stateSchema = z.object({
   version: z.literal(1),
   chats: z.record(z.string(), chatSchema),
   projects: z.record(z.string(), z.string().min(1)),
   bindings: z.record(z.string(), bindingSchema).default({}),
   processedMessages: z.record(z.string(), processedMessageSchema).default({}),
+  runtime: runtimeSchema.default({ chats: {} }),
 });
 
 export type PersistedState = z.infer<typeof stateSchema>;
 export type PersistedChatSession = z.infer<typeof chatSessionSchema>;
+export type PersistedChatRuntime = z.infer<typeof chatRuntimeSchema>;
+export type PersistedChatRuntimeInput = Omit<PersistedChatRuntime, "updatedAt">;
 
 export class StateStore {
   private state: PersistedState = {
@@ -46,6 +99,9 @@ export class StateStore {
     projects: {},
     bindings: {},
     processedMessages: {},
+    runtime: {
+      chats: {},
+    },
   };
   private writeQueue: Promise<void> = Promise.resolve();
 
@@ -70,6 +126,7 @@ export class StateStore {
         projects: Object.keys(this.state.projects).length,
         bindings: Object.keys(this.state.bindings).length,
         processedMessages: Object.keys(this.state.processedMessages).length,
+        runtimeChats: Object.keys(this.state.runtime.chats).length,
       });
     } catch (error: unknown) {
       if (isNotFound(error)) {
@@ -203,6 +260,36 @@ export class StateStore {
 
   processedMessageCount() {
     return Object.keys(this.state.processedMessages).length;
+  }
+
+  getChatRuntime(chatId: string) {
+    return this.state.runtime.chats[chatId];
+  }
+
+  setChatRuntime(chatId: string, runtime: PersistedChatRuntimeInput) {
+    this.state.runtime.chats[chatId] = {
+      ...runtime,
+      updatedAt: Date.now(),
+    };
+    void this.save();
+  }
+
+  clearChatRuntime(chatId: string) {
+    const existed = chatId in this.state.runtime.chats;
+    delete this.state.runtime.chats[chatId];
+    if (existed) void this.save();
+    return existed;
+  }
+
+  runtimeStats() {
+    const chats = Object.values(this.state.runtime.chats);
+    return {
+      chats: chats.length,
+      activeTurns: chats.filter((chat) => chat.activeTurn).length,
+      pendingPermissions: chats.filter((chat) => chat.pendingPermission).length,
+      queuedMessages: chats.reduce((sum, chat) => sum + chat.conversationQueue.queued, 0),
+      pendingBatches: chats.reduce((sum, chat) => sum + chat.pendingBatchCount, 0),
+    };
   }
 
   async flush() {

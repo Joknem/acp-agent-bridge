@@ -241,7 +241,9 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 .data/state.json
 ```
 
-这个文件不会提交到 git。服务重启后会恢复每个聊天的当前 agent/cwd 和项目别名。
+这个文件不会提交到 git。服务重启后会恢复每个聊天的当前 agent/cwd、ACP session、项目别名和群聊绑定。
+
+运行中快照也会写入状态文件：当前 active turn、等待确认的权限请求、消息合并数量和聊天队列摘要。服务重启后不会自动重放这些任务，但 `/status` 和 `/doctor` 会显示重启前残留的运行态，方便判断是否有任务在重启时被打断。
 
 ## Status
 
@@ -251,8 +253,9 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 /status
 ```
 
-会显示当前忙闲状态、排队数量、聊天类型、群聊绑定、当前 agent、cwd、agent 启动命令、ACK 模式、debug 配置、状态文件路径、项目别名数量和群聊绑定数量。
+会显示当前忙闲状态、排队数量、等待权限请求、聊天类型、群聊绑定、当前 agent、cwd、agent 启动命令、ACK 模式、debug 配置、状态文件路径、项目别名数量和群聊绑定数量。
 同时会显示当前 agent 的全局队列状态和消息去重缓存数量，便于判断任务是在聊天队列里等待，还是在 provider 全局队列里等待。
+如果服务刚重启且上一次退出时有未完成任务，`/status` 会额外显示重启前运行态。
 
 查看详细队列：
 
@@ -280,7 +283,7 @@ AGENT_CODEX_ARGS=-y @zed-industries/codex-acp -c 'model="gpt-5.5"' -c 'model_rea
 /doctor chat
 ```
 
-`/doctor` 会检查默认 cwd、状态文件可读写性、agent 命令是否可执行、Codex model/reasoning 参数、飞书/QQ 配置和当前聊天队列/绑定状态。飞书侧会额外做飞书凭证实时检查；QQ 侧会额外显示 QQ Gateway WebSocket 状态。
+`/doctor` 会检查默认 cwd、状态文件可读写性、运行态快照数量、agent 命令是否可执行、Codex model/reasoning 参数、飞书/QQ 配置和当前聊天队列/绑定状态。飞书侧会额外做飞书凭证实时检查；QQ 侧会额外显示 QQ Gateway WebSocket 状态。
 `/doctor agent` 只展示可诊断的 model/reasoning 摘要，不输出完整 agent args。
 
 ## Runtime Controls

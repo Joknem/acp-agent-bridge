@@ -323,6 +323,7 @@ export class QqBot {
     }
 
     this.incomingPipeline.schedule(message.conversation.chatId, state, { message });
+    this.persistChatRuntime(message.conversation.chatId, state, message.conversation.type);
   }
 
   private async processImmediateMessage(message: QqIncomingMessage, state: ChatState) {
@@ -369,6 +370,7 @@ export class QqBot {
       text: summary,
     };
     state.activeTurn = activeTurn;
+    this.persistChatRuntime(chatId, state, firstMessage.conversation.type);
     this.logger.info("prompting acp agent", {
       turnId,
       platform: "qq",
@@ -409,6 +411,7 @@ export class QqBot {
     } finally {
       this.cancelPendingPermission(state);
       if (state.activeTurn === activeTurn) state.activeTurn = undefined;
+      this.persistChatRuntime(chatId, state, firstMessage.conversation.type);
     }
   }
 
@@ -525,6 +528,7 @@ export class QqBot {
     const currentAgent = this.agentManager.listProviders().find((provider) => provider.name === currentProvider);
     const providerQueue = this.agentManager.providerQueueStatus(currentProvider);
     const queueStatus = state.queue.status();
+    const persistedRuntime = this.stateStore.getChatRuntime(chatId);
 
     return renderStatus({
       mode: "plain",
@@ -534,6 +538,21 @@ export class QqBot {
             requestId: state.pendingPermission.requestId,
             toolTitle: state.pendingPermission.request.toolCall.title ?? state.pendingPermission.request.toolCall.toolCallId,
             expiresAt: state.pendingPermission.expiresAt,
+          }
+        : undefined,
+      persistedRuntime: persistedRuntime
+        ? {
+            updatedAt: persistedRuntime.updatedAt,
+            activeTurn: persistedRuntime.activeTurn,
+            pendingPermission: persistedRuntime.pendingPermission
+              ? {
+                  requestId: persistedRuntime.pendingPermission.requestId,
+                  toolTitle: persistedRuntime.pendingPermission.toolTitle,
+                  expiresAt: persistedRuntime.pendingPermission.expiresAt,
+                }
+              : undefined,
+            queued: persistedRuntime.conversationQueue.queued,
+            pendingBatchCount: persistedRuntime.pendingBatchCount,
           }
         : undefined,
       pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
@@ -771,10 +790,51 @@ export class QqBot {
   private getChatState(chatId: string) {
     let state = this.chats.get(chatId);
     if (!state) {
-      state = this.incomingPipeline.createState();
+      let created!: ChatState;
+      created = this.incomingPipeline.createState(() => this.persistChatRuntime(chatId, created)) as ChatState;
+      state = created;
       this.chats.set(chatId, state);
     }
     return state;
+  }
+
+  private persistChatRuntime(chatId: string, state: ChatState, chatType?: string) {
+    const queue = state.queue.status();
+    const pendingBatchCount = state.pendingBatcher?.pendingCount() ?? 0;
+
+    if (!state.activeTurn && !state.pendingPermission && pendingBatchCount === 0 && !queue.active && queue.queued === 0) {
+      this.stateStore.clearChatRuntime(chatId);
+      return;
+    }
+
+    this.stateStore.setChatRuntime(chatId, {
+      platform: "qq",
+      chatType,
+      activeTurn: state.activeTurn
+        ? {
+            turnId: state.activeTurn.turnId,
+            provider: state.activeTurn.provider,
+            cwd: state.activeTurn.cwd,
+            text: state.activeTurn.text,
+            startedAt: state.activeTurn.startedAt,
+          }
+        : undefined,
+      pendingPermission: state.pendingPermission
+        ? {
+            requestId: state.pendingPermission.requestId,
+            provider: state.pendingPermission.provider,
+            cwd: state.pendingPermission.cwd,
+            sessionId: state.pendingPermission.sessionId,
+            turnId: state.pendingPermission.turnId,
+            toolTitle: state.pendingPermission.request.toolCall.title ?? state.pendingPermission.request.toolCall.toolCallId,
+            toolKind: state.pendingPermission.request.toolCall.kind ?? undefined,
+            expiresAt: state.pendingPermission.expiresAt,
+            optionCount: state.pendingPermission.request.options.length,
+          }
+        : undefined,
+      pendingBatchCount,
+      conversationQueue: queue,
+    });
   }
 
   private requestChatPermission(
@@ -801,6 +861,7 @@ export class QqBot {
         timer: setTimeout(() => {
           if (state.pendingPermission !== pending) return;
           state.pendingPermission = undefined;
+          this.persistChatRuntime(destination.conversation.chatId, state, destination.conversation.type);
           resolve(cancelledPermissionResponse());
           void this.replies.sendMarkdown(destination, renderPermissionTimeout(pending, "plain"), "权限已超时").catch((error: unknown) => {
             this.logger.warn("failed to send qq permission timeout", {
@@ -812,6 +873,7 @@ export class QqBot {
       };
 
       state.pendingPermission = pending;
+      this.persistChatRuntime(destination.conversation.chatId, state, destination.conversation.type);
       void this.replies.sendMarkdown(destination, renderPermissionRequest(pending, "plain"), "ACP 权限请求").catch((error: unknown) => {
         if (state.pendingPermission !== pending) return;
         this.logger.warn("failed to send qq permission request", {
@@ -829,6 +891,7 @@ export class QqBot {
     clearTimeout(pending.timer);
     state.pendingPermission = undefined;
     pending.resolve(response);
+    this.persistChatRuntime(pending.destination.conversation.chatId, state, pending.destination.conversation.type);
     return true;
   }
 
@@ -845,16 +908,23 @@ export class QqBot {
   }
 
   private doctorStateStats() {
+    const runtime = this.stateStore.runtimeStats();
     return {
       projects: this.stateStore.listProjects().length,
       bindings: this.stateStore.listBindings().length,
       chatSessions: this.stateStore.chatSessionCount(),
       processedMessages: this.stateStore.processedMessageCount(),
+      runtimeChats: runtime.chats,
+      runtimeActiveTurns: runtime.activeTurns,
+      runtimePendingPermissions: runtime.pendingPermissions,
+      runtimeQueuedMessages: runtime.queuedMessages,
+      runtimePendingBatches: runtime.pendingBatches,
     };
   }
 
   private doctorChat(chatId: string, chatType: string, state: ChatState): DoctorChat {
     const sessionInfo = this.agentManager.currentSessionInfo(chatId);
+    const persistedRuntime = this.stateStore.getChatRuntime(chatId);
     return {
       chatId,
       chatType,
@@ -864,6 +934,16 @@ export class QqBot {
       pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
       activeTurnId: state.activeTurn?.turnId,
       activeText: state.activeTurn ? truncate(state.activeTurn.text, 120) : undefined,
+      persistedRuntime: persistedRuntime
+        ? {
+            updatedAt: persistedRuntime.updatedAt,
+            activeTurnId: persistedRuntime.activeTurn?.turnId,
+            activeText: persistedRuntime.activeTurn ? truncate(persistedRuntime.activeTurn.text, 120) : undefined,
+            pendingPermission: persistedRuntime.pendingPermission?.toolTitle,
+            queued: persistedRuntime.conversationQueue.queued,
+            pendingBatchCount: persistedRuntime.pendingBatchCount,
+          }
+        : undefined,
       sessionId: sessionInfo.sessionId,
       sessionSource: sessionInfo.source,
       sessionPersisted: sessionInfo.persisted,

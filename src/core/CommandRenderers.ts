@@ -45,6 +45,17 @@ export type RenderStatusOptions = {
     toolTitle: string;
     expiresAt: number;
   };
+  persistedRuntime?: {
+    updatedAt: number;
+    activeTurn?: CommandActiveTurn;
+    pendingPermission?: {
+      requestId: string;
+      toolTitle: string;
+      expiresAt: number;
+    };
+    queued: number;
+    pendingBatchCount: number;
+  };
   pendingBatchCount?: number;
   conversationQueue: {
     queued: number;
@@ -201,6 +212,9 @@ export function renderStatus(options: RenderStatusOptions) {
     options.pendingPermission
       ? `等待权限：${code(options.pendingPermission.toolTitle, options.mode)} ${code(options.pendingPermission.requestId, options.mode)} ${code(`${Math.max(0, options.pendingPermission.expiresAt - now)}ms`, options.mode)}`
       : undefined,
+    !activeTurn && !options.pendingPermission && options.persistedRuntime
+      ? renderPersistedRuntime(options.persistedRuntime, options.mode, now)
+      : undefined,
     pendingBatchCount > 0 ? `正在合并消息：${code(String(pendingBatchCount), options.mode)}` : undefined,
     `排队消息：${code(String(options.conversationQueue.queued), options.mode)}`,
     `当前 agent 全局队列：${code(`${options.providerQueue.active ? "处理中" : "空闲"}，等待 ${options.providerQueue.queued}`, options.mode)}`,
@@ -239,6 +253,18 @@ export function renderStatus(options: RenderStatusOptions) {
   ]
     .filter((line): line is string => Boolean(line))
     .join("\n");
+}
+
+function renderPersistedRuntime(runtime: NonNullable<RenderStatusOptions["persistedRuntime"]>, mode: CommandRenderMode, now: number) {
+  const parts = [
+    `updated ${formatDuration(now - runtime.updatedAt)} ago`,
+    runtime.activeTurn ? `turn ${runtime.activeTurn.turnId}` : undefined,
+    runtime.pendingPermission ? `permission ${runtime.pendingPermission.toolTitle}` : undefined,
+    runtime.queued > 0 ? `queued ${runtime.queued}` : undefined,
+    runtime.pendingBatchCount > 0 ? `merging ${runtime.pendingBatchCount}` : undefined,
+  ].filter(Boolean);
+
+  return parts.length ? `重启前运行态：${code(parts.join("，"), mode)}` : undefined;
 }
 
 export function renderQueue(options: RenderQueueOptions) {

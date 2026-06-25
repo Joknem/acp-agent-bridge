@@ -74,6 +74,8 @@ This layer is platform-neutral. It is the beginning of a shared pipeline inspire
 
 Persisted state includes per-chat provider/cwd, per-chat/provider ACP session IDs, project aliases, group bindings, and processed message IDs for event dedupe. When a chat/provider/cwd has a saved session and the agent supports `session/resume` or `session/load`, the next prompt resumes it; cwd changes and `/reset` clear saved sessions.
 
+The state file also stores lightweight runtime snapshots for diagnostics: active turns, pending permission requests, pending message-batch counts, and conversation queue summaries. These snapshots are intentionally not replayed after restart because queued work is represented by in-memory closures; they are used by `/status` and `/doctor` to explain what was interrupted before the process stopped.
+
 ### Rendering
 
 - `src/markdown/larkPost.ts`

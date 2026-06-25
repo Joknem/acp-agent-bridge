@@ -1,6 +1,6 @@
 import { ConversationQueue } from "./ConversationQueue.js";
 import { MessageBatcher } from "./MessageBatcher.js";
-import type { QueueTaskMetadata } from "./QueueSnapshot.js";
+import type { QueueStatusSnapshot, QueueTaskMetadata } from "./QueueSnapshot.js";
 
 export type IncomingPipelineState<TItem> = {
   queue: ConversationQueue;
@@ -25,9 +25,9 @@ type PipelineOptions<TItem> = {
 export class IncomingMessagePipeline<TItem> {
   constructor(private readonly options: PipelineOptions<TItem>) {}
 
-  createState(): IncomingPipelineState<TItem> {
+  createState(onQueueChange?: (status: QueueStatusSnapshot) => void): IncomingPipelineState<TItem> {
     return {
-      queue: new ConversationQueue(),
+      queue: new ConversationQueue(onQueueChange),
     };
   }
 

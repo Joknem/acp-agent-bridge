@@ -104,6 +104,34 @@ function testStatus() {
   assert(rendered.includes("消息去重缓存：`8`"));
   assert(rendered.includes("agent 命令：`codex --model gpt-5 --token <redacted>`"));
   assert(rendered.includes("权限策略：`allow_once`"));
+
+  const recovered = renderStatus({
+    mode: "markdown",
+    now: 200_000,
+    persistedRuntime: {
+      updatedAt: 170_000,
+      activeTurn: {
+        turnId: "turn-old",
+        startedAt: 120_000,
+        text: "interrupted task",
+      },
+      queued: 2,
+      pendingBatchCount: 1,
+    },
+    conversationQueue: { queued: 0 },
+    providerQueue: { active: false, queued: 0 },
+    currentProvider: "codex",
+    currentCwd: "/repo",
+    session: {
+      providerName: "codex",
+      cwd: "/repo",
+      persisted: false,
+    },
+    messageMergeWindowMs: 2_000,
+    commands: [],
+  });
+  assert(recovered.includes("重启前运行态："));
+  assert(recovered.includes("turn turn-old"));
 }
 
 function testQueue() {

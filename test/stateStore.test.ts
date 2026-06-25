@@ -98,6 +98,53 @@ assert.equal(store.markProcessedMessage("feishu:message-a", 2_000), false);
 assert.equal(store.markProcessedMessage("qq:message-a", 3_000), true);
 assert.equal(store.processedMessageCount(), 2);
 
+assert.equal(store.runtimeStats().chats, 0);
+store.setChatRuntime("chat_a", {
+  platform: "feishu",
+  chatType: "p2p",
+  activeTurn: {
+    turnId: "turn-a",
+    provider: "codex",
+    cwd: "/tmp/project-a",
+    text: "work in progress",
+    startedAt: 10_000,
+  },
+  pendingPermission: {
+    requestId: "perm-a",
+    provider: "codex",
+    cwd: "/tmp/project-a",
+    sessionId: "session-c",
+    turnId: "turn-a",
+    toolTitle: "Edit file",
+    toolKind: "edit",
+    expiresAt: 70_000,
+    optionCount: 3,
+  },
+  pendingBatchCount: 1,
+  conversationQueue: {
+    queued: 1,
+    pending: [
+      {
+        id: "queue-a",
+        kind: "message_batch",
+        label: "消息批次",
+        summary: "queued work",
+        owner: "chat_a",
+        enqueuedAt: 11_000,
+      },
+    ],
+  },
+});
+await store.flush();
+assert.equal(store.getChatRuntime("chat_a")?.activeTurn?.turnId, "turn-a");
+assert.equal(store.runtimeStats().chats, 1);
+assert.equal(store.runtimeStats().activeTurns, 1);
+assert.equal(store.runtimeStats().pendingPermissions, 1);
+assert.equal(store.runtimeStats().queuedMessages, 1);
+assert.equal(store.runtimeStats().pendingBatches, 1);
+assert.equal(store.clearChatRuntime("chat_a"), true);
+assert.equal(store.clearChatRuntime("chat_a"), false);
+
 assert.equal(store.deleteBinding("group_a"), true);
 assert.equal(store.deleteBinding("group_a"), false);
 await store.flush();
