@@ -39,6 +39,7 @@ FEISHU_SEND_TIMEOUT_MS=15000
 FEISHU_IMAGE_MAX_BYTES=10485760
 FEISHU_MESSAGE_MERGE_WINDOW_MS=2000
 ACP_PROMPT_TIMEOUT_MS=120000
+ACP_PERMISSION_MODE=allow_once
 STATE_FILE=.data/state.json
 
 # QQ official bot adapter. Disabled unless explicitly enabled.
@@ -71,6 +72,12 @@ AGENT_KIMI_COMMAND=/home/joknem/.kimi-code/bin/kimi
 ```
 
 `ACP_DEFAULT_CWD` 也必须是当前机器上真实存在的目录。
+
+`ACP_PERMISSION_MODE` 控制 ACP agent 请求敏感工具权限时的策略：
+
+- `allow_once`：默认值，优先选择 agent 提供的单次允许选项。
+- `allow_always`：优先选择长期允许选项，适合非常信任的本地私有环境。
+- `deny`：优先选择拒绝选项；agent 没提供拒绝选项时返回 cancelled。
 
 Kimi CLI 需要已登录：
 

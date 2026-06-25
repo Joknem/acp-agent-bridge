@@ -7,7 +7,7 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/src/index.js",
-    "test": "tsx test/markdown.test.ts && tsx test/replyFormatter.test.ts && tsx test/replyAdapter.test.ts && tsx test/turnId.test.ts && tsx test/turnFailure.test.ts && tsx test/commandRedaction.test.ts && tsx test/commandRenderers.test.ts && tsx test/acpE2e.test.ts && tsx test/stateStore.test.ts && tsx test/asyncSerialQueue.test.ts && tsx test/conversationQueue.test.ts && tsx test/messageBatcher.test.ts && tsx test/commandRouter.test.ts && tsx test/incomingMessagePipeline.test.ts && tsx test/doctor.test.ts && tsx test/normalizedMessage.test.ts && tsx test/feishuIncomingMessage.test.ts && tsx test/feishuPromptBatch.test.ts && tsx test/qqMessages.test.ts && tsx test/qqPromptBatch.test.ts && tsx test/qqAccessToken.test.ts",
+    "test": "tsx test/markdown.test.ts && tsx test/replyFormatter.test.ts && tsx test/replyAdapter.test.ts && tsx test/turnId.test.ts && tsx test/turnFailure.test.ts && tsx test/commandRedaction.test.ts && tsx test/permissionPolicy.test.ts && tsx test/commandRenderers.test.ts && tsx test/acpE2e.test.ts && tsx test/stateStore.test.ts && tsx test/asyncSerialQueue.test.ts && tsx test/conversationQueue.test.ts && tsx test/messageBatcher.test.ts && tsx test/commandRouter.test.ts && tsx test/incomingMessagePipeline.test.ts && tsx test/doctor.test.ts && tsx test/normalizedMessage.test.ts && tsx test/feishuIncomingMessage.test.ts && tsx test/feishuPromptBatch.test.ts && tsx test/qqMessages.test.ts && tsx test/qqPromptBatch.test.ts && tsx test/qqAccessToken.test.ts",
     "check": "npm run build && npm test"
   },
   "keywords": [],

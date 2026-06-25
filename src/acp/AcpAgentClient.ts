@@ -17,6 +17,7 @@ import { redactCommandArgs } from "../core/CommandRedaction.js";
 import type { Logger } from "../logger.js";
 import { resolveInsideRoot } from "../utils/pathSafety.js";
 import { truncate } from "../utils/text.js";
+import { permissionDecision } from "./PermissionPolicy.js";
 import {
   AgentPromptError,
   type AcpAgentProvider,
@@ -327,22 +328,16 @@ export class AcpAgentClient {
       return { outcome: { outcome: "cancelled" as const } };
     }
 
-    const option =
-      params.options.find((item) => item.kind === "allow_once") ??
-      params.options.find((item) => item.kind === "allow_always") ??
-      params.options[0];
-
-    if (!option) {
-      return { outcome: { outcome: "cancelled" as const } };
+    const decision = permissionDecision(this.config.acp.permissionMode, params.options);
+    if (decision.outcome.outcome === "cancelled") {
+      this.appendTool(params.sessionId, `Permission cancelled by policy: ${this.config.acp.permissionMode}`);
+      return decision;
     }
 
-    this.appendTool(params.sessionId, `Permission selected: ${option.name}`);
-    return {
-      outcome: {
-        outcome: "selected" as const,
-        optionId: option.optionId,
-      },
-    };
+    const selected = decision.outcome;
+    const option = params.options.find((item) => item.optionId === selected.optionId);
+    this.appendTool(params.sessionId, `Permission selected by policy ${this.config.acp.permissionMode}: ${option?.name ?? selected.optionId}`);
+    return decision;
   }
 
   private async sessionUpdate(params: SessionNotification) {

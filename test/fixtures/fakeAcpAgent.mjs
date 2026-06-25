@@ -57,13 +57,49 @@ class FakeAgent {
 
     const text = promptText(params.prompt);
     const wasResumed = resumedSessions.has(params.sessionId);
+    let permissionText = "";
+    if (mode === "permission") {
+      const permission = await this.connection.requestPermission({
+        sessionId: params.sessionId,
+        toolCall: {
+          toolCallId: "fake-permission-tool",
+          title: "Fake permission tool",
+          kind: "edit",
+          status: "pending",
+          locations: [],
+          rawInput: {},
+        },
+        options: [
+          {
+            kind: "allow_once",
+            name: "Allow once",
+            optionId: "allow-once",
+          },
+          {
+            kind: "allow_always",
+            name: "Allow always",
+            optionId: "allow-always",
+          },
+          {
+            kind: "reject_once",
+            name: "Reject once",
+            optionId: "reject-once",
+          },
+        ],
+      });
+      permissionText =
+        permission.outcome.outcome === "selected"
+          ? ` permission=${permission.outcome.optionId}`
+          : ` permission=${permission.outcome.outcome}`;
+    }
+
     await this.connection.sessionUpdate({
       sessionId: params.sessionId,
       update: {
         sessionUpdate: "agent_message_chunk",
         content: {
           type: "text",
-          text: `fake reply session=${params.sessionId} resumed=${wasResumed} text=${text}`,
+          text: `fake reply session=${params.sessionId} resumed=${wasResumed}${permissionText} text=${text}`,
         },
       },
     });

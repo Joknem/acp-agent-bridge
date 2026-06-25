@@ -62,6 +62,7 @@ export type RenderStatusOptions = {
   currentAgentCommand?: string;
   defaultAgent?: string;
   acpTimeoutMs?: number;
+  permissionMode?: string;
   messageMergeWindowMs: number;
   ack?: {
     mode: string;
@@ -203,6 +204,7 @@ export function renderStatus(options: RenderStatusOptions) {
     options.currentAgentCommand ? `agent 命令：${code(options.currentAgentCommand, options.mode)}` : undefined,
     options.defaultAgent ? `默认 agent：${code(options.defaultAgent, options.mode)}` : undefined,
     options.acpTimeoutMs !== undefined ? `ACP 超时：${code(`${options.acpTimeoutMs}ms`, options.mode)}` : undefined,
+    options.permissionMode ? `权限策略：${code(options.permissionMode, options.mode)}` : undefined,
     `消息合并窗口：${code(`${options.messageMergeWindowMs}ms`, options.mode)}`,
     options.ack ? `ACK 模式：${code(options.ack.mode, options.mode)}` : undefined,
     options.ack?.mode === "reaction" && options.ack.processingReaction

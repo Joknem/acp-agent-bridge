@@ -450,6 +450,7 @@ export class QqBot {
       currentAgentCommand: currentAgent ? formatCommandForDisplay(currentAgent.command, currentAgent.args) : undefined,
       defaultAgent: this.config.acp.defaultAgent,
       acpTimeoutMs: this.config.acp.promptTimeoutMs,
+      permissionMode: this.config.acp.permissionMode,
       messageMergeWindowMs: this.config.qq.messageMergeWindowMs,
       chatSessionCount: this.stateStore.chatSessionCount(),
       processedMessageCount: this.stateStore.processedMessageCount(),

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AgentManager } from "../src/acp/AgentManager.js";
+import type { PermissionMode } from "../src/acp/PermissionPolicy.js";
 import { AgentPromptError, type AgentPromptContent } from "../src/acp/types.js";
 import type { AppConfig } from "../src/config.js";
 import type { Logger } from "../src/logger.js";
@@ -23,6 +24,9 @@ const prompt: AgentPromptContent = [{ type: "text", text: "hello fake agent" }];
 
 await testPromptAndResume();
 await testTimeoutCancelDiagnostics();
+await testPermissionPolicy("allow_once", "allow-once");
+await testPermissionPolicy("allow_always", "allow-always");
+await testPermissionPolicy("deny", "reject-once");
 
 console.log("acp e2e tests passed");
 
@@ -89,7 +93,23 @@ async function testTimeoutCancelDiagnostics() {
   }
 }
 
-function makeConfig(cwd: string, extraArgs: string[], promptTimeoutMs: number): AppConfig {
+async function testPermissionPolicy(permissionMode: PermissionMode, expectedOptionId: string) {
+  const stateFile = path.join(root, `permission-${permissionMode}.json`);
+  const stateStore = new StateStore(stateFile, logger);
+  await stateStore.load();
+
+  const manager = new AgentManager(makeConfig(root, ["--mode=permission"], 1_000, permissionMode), logger, stateStore);
+
+  try {
+    const turn = await manager.prompt(`chat-permission-${permissionMode}`, prompt, { turnId: `turn-permission-${permissionMode}` });
+    assert(turn.answerMarkdown.includes(`permission=${expectedOptionId}`));
+    assert(turn.toolMarkdown.includes(`Permission selected by policy ${permissionMode}`));
+  } finally {
+    await manager.stopAll();
+  }
+}
+
+function makeConfig(cwd: string, extraArgs: string[], promptTimeoutMs: number, permissionMode: PermissionMode = "allow_once"): AppConfig {
   return {
     feishu: {
       appId: "cli_fake",
@@ -107,6 +127,7 @@ function makeConfig(cwd: string, extraArgs: string[], promptTimeoutMs: number): 
         },
       ],
       promptTimeoutMs,
+      permissionMode,
     },
     qq: {
       enabled: false,

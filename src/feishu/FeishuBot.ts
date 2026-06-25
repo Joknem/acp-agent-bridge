@@ -813,6 +813,7 @@ export class FeishuBot {
       currentAgentCommand: currentAgent ? formatCommandForDisplay(currentAgent.command, currentAgent.args) : undefined,
       defaultAgent: this.config.acp.defaultAgent,
       acpTimeoutMs: this.config.acp.promptTimeoutMs,
+      permissionMode: this.config.acp.permissionMode,
       messageMergeWindowMs: this.config.messageMergeWindowMs,
       ack: {
         mode: this.config.ackMode,
