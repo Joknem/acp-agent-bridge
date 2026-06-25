@@ -64,6 +64,7 @@ function testStatus() {
     },
     currentProvider: "codex",
     currentCwd: "/repo",
+    allowedCwdRoots: ["/repo"],
     session: {
       providerName: "codex",
       cwd: "/repo",
@@ -98,6 +99,7 @@ function testStatus() {
   assert(rendered.includes("状态：`处理中 1m00s`"));
   assert(rendered.includes("等待权限：`Edit file` `perm-1` `15000ms`"));
   assert(rendered.includes("当前 agent 全局队列：`处理中，等待 3`"));
+  assert(rendered.includes("允许 cwd 范围：`/repo`"));
   assert(rendered.includes("绑定项目：`bridge`"));
   assert(rendered.includes("session 状态：`persisted`"));
   assert(rendered.includes("`最近失败：timeout`"));

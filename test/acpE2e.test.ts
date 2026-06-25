@@ -28,6 +28,7 @@ await testPermissionPolicy("allow_once", "allow-once");
 await testPermissionPolicy("allow_always", "allow-always");
 await testPermissionPolicy("deny", "reject-once");
 await testPermissionAskInChat();
+await testPersistedCwdBoundary();
 
 console.log("acp e2e tests passed");
 
@@ -139,7 +140,34 @@ async function testPermissionAskInChat() {
   }
 }
 
-function makeConfig(cwd: string, extraArgs: string[], promptTimeoutMs: number, permissionMode: PermissionMode = "allow_once"): AppConfig {
+async function testPersistedCwdBoundary() {
+  const stateFile = path.join(root, "cwd-boundary-state.json");
+  const stateStore = new StateStore(stateFile, logger);
+  await stateStore.load();
+  stateStore.setChat("chat-outside-cwd", { cwd: path.resolve(root, "../outside-root") });
+  stateStore.setChatSession("chat-outside-cwd", "fake", {
+    sessionId: "old-session",
+    cwd: path.resolve(root, "../outside-root"),
+  });
+
+  const manager = new AgentManager(makeConfig(root, ["--mode=normal"], 1_000, "allow_once", [root]), logger, stateStore);
+  try {
+    assert.equal(manager.currentCwd("chat-outside-cwd"), root);
+    assert.equal(stateStore.getChatSession("chat-outside-cwd", "fake"), undefined);
+    const turn = await manager.prompt("chat-outside-cwd", prompt, { turnId: "turn-cwd-boundary" });
+    assert(turn.answerMarkdown.includes("fake reply"));
+  } finally {
+    await manager.stopAll();
+  }
+}
+
+function makeConfig(
+  cwd: string,
+  extraArgs: string[],
+  promptTimeoutMs: number,
+  permissionMode: PermissionMode = "allow_once",
+  allowedCwdRoots: string[] = [],
+): AppConfig {
   return {
     feishu: {
       appId: "cli_fake",
@@ -148,6 +176,7 @@ function makeConfig(cwd: string, extraArgs: string[], promptTimeoutMs: number, p
     },
     acp: {
       cwd,
+      allowedCwdRoots,
       defaultAgent: "fake",
       agents: [
         {

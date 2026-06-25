@@ -25,6 +25,7 @@ import {
 import { formatCommandForDisplay } from "../core/CommandRedaction.js";
 import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
+import { assertCwdAllowed } from "../core/CwdPolicy.js";
 import { ReplyAdapter } from "../core/ReplyAdapter.js";
 import { createTurnId } from "../core/TurnId.js";
 import { createTurnFailure, type TurnFailure } from "../core/TurnFailure.js";
@@ -481,6 +482,7 @@ export class FeishuBot {
 
     const target = path.resolve(rawTarget);
     await assertDirectory(target);
+    this.assertCwdAllowed(target);
     const interrupted = await this.cancelActiveTurnForControl(chatId);
     this.agentManager.setCwd(chatId, target);
     if (isGroupChat(chatType)) {
@@ -519,6 +521,7 @@ export class FeishuBot {
 
       const cwd = path.resolve(rawCwd);
       await assertDirectory(cwd);
+      this.assertCwdAllowed(cwd);
       this.stateStore.setProject(name, cwd);
       await this.sendMarkdown(chatId, `已保存项目别名：\`${normalizeProjectName(name)}\` -> \`${cwd}\``, "项目别名已保存");
       return;
@@ -543,6 +546,7 @@ export class FeishuBot {
     }
 
     await assertDirectory(cwd);
+    this.assertCwdAllowed(cwd);
     const interrupted = await this.cancelActiveTurnForControl(chatId);
     this.agentManager.setCwd(chatId, cwd);
     if (isGroupChat(chatType)) {
@@ -706,11 +710,13 @@ export class FeishuBot {
     const projectCwd = this.stateStore.getProject(projectName);
     if (projectCwd) {
       await assertDirectory(projectCwd);
+      this.assertCwdAllowed(projectCwd);
       return { cwd: projectCwd, projectName };
     }
 
     const cwd = path.resolve(target);
     await assertDirectory(cwd);
+    this.assertCwdAllowed(cwd);
     return { cwd };
   }
 
@@ -728,12 +734,14 @@ export class FeishuBot {
 
       await fs.mkdir(existingCwd, { recursive: true });
       await assertDirectory(existingCwd);
+      this.assertCwdAllowed(existingCwd);
       return { cwd: existingCwd, projectName };
     }
 
     const cwd = resolveNewProjectCwd(this.config.acp.cwd, projectName, rawCwd);
     await fs.mkdir(cwd, { recursive: true });
     await assertDirectory(cwd);
+    this.assertCwdAllowed(cwd);
     return { cwd, projectName };
   }
 
@@ -886,6 +894,7 @@ export class FeishuBot {
       },
       currentProvider,
       currentCwd,
+      allowedCwdRoots: this.config.acp.allowedCwdRoots,
       session: sessionInfo,
       lastFailure: state.lastFailure,
       currentAgentCommand: currentAgent ? formatCommandForDisplay(currentAgent.command, currentAgent.args) : undefined,
@@ -1356,9 +1365,14 @@ export class FeishuBot {
     if (!binding) return;
 
     await assertDirectory(binding.cwd);
+    this.assertCwdAllowed(binding.cwd);
     if (this.agentManager.currentCwd(chatId) !== binding.cwd) {
       this.agentManager.setCwd(chatId, binding.cwd);
     }
+  }
+
+  private assertCwdAllowed(cwd: string) {
+    assertCwdAllowed(cwd, this.config.acp.allowedCwdRoots);
   }
 
   private async maybeNotifyQueuedMessage(chatId: string, text: string, state: ChatState) {

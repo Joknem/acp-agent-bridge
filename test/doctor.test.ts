@@ -17,6 +17,7 @@ const config = {
   },
   acp: {
     cwd: dir,
+    allowedCwdRoots: [dir],
     defaultAgent: "codex",
     promptTimeoutMs: 120_000,
     permissionMode: "allow_once",

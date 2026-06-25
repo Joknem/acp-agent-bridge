@@ -1,6 +1,7 @@
 import path from "node:path";
 import dotenv from "dotenv";
 import { z } from "zod";
+import { parseAllowedCwdRoots } from "./core/CwdPolicy.js";
 
 dotenv.config({
   path: path.resolve(process.cwd(), ".env"),
@@ -34,6 +35,7 @@ const envSchema = z.object({
   FEISHU_SEND_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
   FEISHU_IMAGE_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   FEISHU_MESSAGE_MERGE_WINDOW_MS: z.coerce.number().int().min(0).default(2000),
+  ACP_ALLOWED_CWD_ROOTS: z.string().optional().default(""),
   ACP_PROMPT_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   ACP_PERMISSION_MODE: z.enum(["allow_once", "allow_always", "deny", "ask_in_chat"]).default("allow_once"),
   ACP_PERMISSION_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(60000),
@@ -96,6 +98,7 @@ export function loadConfig() {
     },
     acp: {
       cwd: path.resolve(parsed.data.ACP_DEFAULT_CWD),
+      allowedCwdRoots: parseAllowedCwdRoots(parsed.data.ACP_ALLOWED_CWD_ROOTS, parsed.data.ACP_DEFAULT_CWD),
       defaultAgent,
       agents,
       promptTimeoutMs: parsed.data.ACP_PROMPT_TIMEOUT_MS,

@@ -561,6 +561,7 @@ export class QqBot {
       chatType,
       currentProvider,
       currentCwd: this.agentManager.currentCwd(chatId),
+      allowedCwdRoots: this.config.acp.allowedCwdRoots,
       session: sessionInfo,
       lastFailure: state.lastFailure,
       currentAgentCommand: currentAgent ? formatCommandForDisplay(currentAgent.command, currentAgent.args) : undefined,

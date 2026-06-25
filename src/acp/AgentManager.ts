@@ -1,4 +1,5 @@
 import type { AppConfig } from "../config.js";
+import { assertCwdAllowed, isCwdAllowed } from "../core/CwdPolicy.js";
 import type { Logger } from "../logger.js";
 import type { StateStore } from "../state/StateStore.js";
 import { AsyncSerialQueue } from "../utils/AsyncSerialQueue.js";
@@ -22,6 +23,7 @@ export class AgentManager {
     private readonly logger: Logger,
     private readonly stateStore: StateStore,
   ) {
+    assertCwdAllowed(config.acp.cwd, config.acp.allowedCwdRoots);
     for (const provider of config.acp.agents) {
       this.providers.set(provider.name, provider);
     }
@@ -52,6 +54,7 @@ export class AgentManager {
   }
 
   setCwd(chatId: string, cwd: string) {
+    assertCwdAllowed(cwd, this.config.acp.allowedCwdRoots);
     const state = this.getChatState(chatId);
     state.cwd = cwd;
     state.sessions.clear();
@@ -281,7 +284,7 @@ export class AgentManager {
       const persisted = this.stateStore.getChat(chatId);
       state = {
         providerName: this.resolvePersistedProvider(persisted?.providerName),
-        cwd: persisted?.cwd ?? this.config.acp.cwd,
+        cwd: this.resolvePersistedCwd(chatId, persisted?.cwd),
         sessions: new Map(),
       };
       this.chats.set(chatId, state);
@@ -296,6 +299,21 @@ export class AgentManager {
     }
 
     return this.config.acp.defaultAgent;
+  }
+
+  private resolvePersistedCwd(chatId: string, cwd?: string) {
+    if (!cwd) return this.config.acp.cwd;
+    if (isCwdAllowed(cwd, this.config.acp.allowedCwdRoots)) return cwd;
+
+    this.logger.warn("ignored persisted cwd outside allowed roots", {
+      chatId,
+      cwd,
+      allowedRoots: this.config.acp.allowedCwdRoots,
+      fallback: this.config.acp.cwd,
+    });
+    this.stateStore.setChat(chatId, { cwd: this.config.acp.cwd });
+    this.stateStore.clearChatSessions(chatId);
+    return this.config.acp.cwd;
   }
 }
 

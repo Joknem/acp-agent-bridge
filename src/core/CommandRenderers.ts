@@ -73,6 +73,7 @@ export type RenderStatusOptions = {
   };
   currentProvider: string;
   currentCwd: string;
+  allowedCwdRoots?: string[];
   session: AgentSessionInfo;
   lastFailure?: TurnFailure;
   currentAgentCommand?: string;
@@ -224,6 +225,9 @@ export function renderStatus(options: RenderStatusOptions) {
     options.groupBinding?.projectName ? `绑定项目：${code(options.groupBinding.projectName, options.mode)}` : undefined,
     `当前 agent：${code(options.currentProvider, options.mode)}`,
     `当前 cwd：${code(options.currentCwd, options.mode)}`,
+    options.allowedCwdRoots
+      ? `允许 cwd 范围：${code(options.allowedCwdRoots.length ? options.allowedCwdRoots.join(", ") : "unrestricted", options.mode)}`
+      : undefined,
     session.sessionId ? `当前 session：${code(session.sessionId, options.mode)}` : `当前 session：${code("未创建", options.mode)}`,
     session.sessionId ? `session 状态：${code(renderSessionStatus(session.source, session.persisted), options.mode)}` : undefined,
     options.lastFailure ? renderStatusFailure(options.lastFailure, options.mode, now) : undefined,

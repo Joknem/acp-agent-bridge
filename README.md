@@ -38,6 +38,7 @@ FEISHU_ERROR_REACTION=
 FEISHU_SEND_TIMEOUT_MS=15000
 FEISHU_IMAGE_MAX_BYTES=10485760
 FEISHU_MESSAGE_MERGE_WINDOW_MS=2000
+ACP_ALLOWED_CWD_ROOTS=
 ACP_PROMPT_TIMEOUT_MS=120000
 ACP_PERMISSION_MODE=allow_once
 ACP_PERMISSION_REQUEST_TIMEOUT_MS=60000
@@ -73,6 +74,14 @@ AGENT_KIMI_COMMAND=/home/joknem/.kimi-code/bin/kimi
 ```
 
 `ACP_DEFAULT_CWD` 也必须是当前机器上真实存在的目录。
+
+`ACP_ALLOWED_CWD_ROOTS` 用逗号分隔允许的工作目录根目录，例如：
+
+```env
+ACP_ALLOWED_CWD_ROOTS=/home/joknem/projects,/home/joknem/acp-create
+```
+
+留空表示不限制。配置后，`/cwd`、`/project add`、`/bind`、`/bind new` 和持久化 cwd 恢复都只能使用这些根目录内部的路径；生产环境建议显式配置。
 
 `ACP_PERMISSION_MODE` 控制 ACP agent 请求敏感工具权限时的策略：
 

@@ -144,6 +144,9 @@ async function buildConfigSection(config: AppConfig): Promise<DoctorSection> {
   const cwd = await directoryItem("默认 cwd", config.acp.cwd);
   const items: DoctorItem[] = [
     cwd,
+    config.acp.allowedCwdRoots.length
+      ? ok("允许 cwd 范围", config.acp.allowedCwdRoots.map((root) => `\`${root}\``).join(", "))
+      : warn("允许 cwd 范围", "未限制，聊天命令可以切换到任意存在的绝对目录"),
     config.acp.promptTimeoutMs < 60_000
       ? warn("ACP 超时", `${config.acp.promptTimeoutMs}ms 偏短，长任务容易超时`)
       : ok("ACP 超时", `${config.acp.promptTimeoutMs}ms`),
