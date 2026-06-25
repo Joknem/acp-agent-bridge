@@ -20,6 +20,7 @@ const config = {
     defaultAgent: "codex",
     promptTimeoutMs: 120_000,
     permissionMode: "allow_once",
+    permissionRequestTimeoutMs: 60_000,
     agents: [
       {
         name: "codex",
@@ -106,6 +107,7 @@ const formatted = formatDoctorReport(report);
 assert(formatted.includes("model=gpt-5.5"));
 assert(formatted.includes("reasoning=high"));
 assert(formatted.includes("权限策略"));
+assert(formatted.includes("权限等待"));
 assert(!formatted.includes("sk-live-secretsecret"));
 assert(formatted.includes("definitely-not-a-real-command"));
 assert(formatted.includes("FAIL"));

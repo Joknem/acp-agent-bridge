@@ -1,4 +1,4 @@
-import type { ContentBlock } from "@agentclientprotocol/sdk";
+import type { ContentBlock, RequestPermissionRequest, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 
 export type AgentPromptContent = ContentBlock[];
 
@@ -38,7 +38,18 @@ export type AgentSessionInfo = {
 export type AgentPromptOptions = {
   turnId?: string;
   queueSummary?: string;
+  permissionHandler?: AgentPermissionHandler;
 };
+
+export type AgentPermissionContext = {
+  provider: string;
+  cwd: string;
+  sessionId: string;
+  turnId?: string;
+  request: RequestPermissionRequest;
+};
+
+export type AgentPermissionHandler = (context: AgentPermissionContext) => Promise<RequestPermissionResponse>;
 
 export type TimeoutCancelStatus = "succeeded" | "failed" | "not_attempted";
 

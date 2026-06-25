@@ -27,6 +27,7 @@ await testTimeoutCancelDiagnostics();
 await testPermissionPolicy("allow_once", "allow-once");
 await testPermissionPolicy("allow_always", "allow-always");
 await testPermissionPolicy("deny", "reject-once");
+await testPermissionAskInChat();
 
 console.log("acp e2e tests passed");
 
@@ -109,6 +110,35 @@ async function testPermissionPolicy(permissionMode: PermissionMode, expectedOpti
   }
 }
 
+async function testPermissionAskInChat() {
+  const stateFile = path.join(root, "permission-ask-in-chat.json");
+  const stateStore = new StateStore(stateFile, logger);
+  await stateStore.load();
+
+  const manager = new AgentManager(makeConfig(root, ["--mode=permission"], 1_000, "ask_in_chat"), logger, stateStore);
+
+  try {
+    const turn = await manager.prompt("chat-permission-ask", prompt, {
+      turnId: "turn-permission-ask",
+      permissionHandler: async (context) => {
+        assert.equal(context.provider, "fake");
+        assert.equal(context.turnId, "turn-permission-ask");
+        assert.equal(context.request.toolCall.title, "Fake permission tool");
+        return {
+          outcome: {
+            outcome: "selected",
+            optionId: "allow-always",
+          },
+        };
+      },
+    });
+    assert(turn.answerMarkdown.includes("permission=allow-always"));
+    assert(turn.toolMarkdown.includes("Permission selected in chat: Allow always"));
+  } finally {
+    await manager.stopAll();
+  }
+}
+
 function makeConfig(cwd: string, extraArgs: string[], promptTimeoutMs: number, permissionMode: PermissionMode = "allow_once"): AppConfig {
   return {
     feishu: {
@@ -128,6 +158,7 @@ function makeConfig(cwd: string, extraArgs: string[], promptTimeoutMs: number, p
       ],
       promptTimeoutMs,
       permissionMode,
+      permissionRequestTimeoutMs: 60_000,
     },
     qq: {
       enabled: false,

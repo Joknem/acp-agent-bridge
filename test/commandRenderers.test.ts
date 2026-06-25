@@ -47,6 +47,11 @@ function testStatus() {
       startedAt: 100_000,
       text: "正在处理的较长消息",
     },
+    pendingPermission: {
+      requestId: "perm-1",
+      toolTitle: "Edit file",
+      expiresAt: 175_000,
+    },
     pendingBatchCount: 2,
     conversationQueue: { queued: 1 },
     providerQueue: { active: true, queued: 3 },
@@ -91,6 +96,7 @@ function testStatus() {
   });
 
   assert(rendered.includes("状态：`处理中 1m00s`"));
+  assert(rendered.includes("等待权限：`Edit file` `perm-1` `15000ms`"));
   assert(rendered.includes("当前 agent 全局队列：`处理中，等待 3`"));
   assert(rendered.includes("绑定项目：`bridge`"));
   assert(rendered.includes("session 状态：`persisted`"));

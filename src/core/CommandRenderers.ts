@@ -40,6 +40,11 @@ export type RenderStatusOptions = {
   mode: CommandRenderMode;
   now?: number;
   activeTurn?: CommandActiveTurn;
+  pendingPermission?: {
+    requestId: string;
+    toolTitle: string;
+    expiresAt: number;
+  };
   pendingBatchCount?: number;
   conversationQueue: {
     queued: number;
@@ -102,6 +107,8 @@ const FEISHU_HELP: AgentShortcut[] = [
   { command: "/help", label: "查看帮助" },
   { command: "/status", label: "查看当前聊天状态" },
   { command: "/queue", label: "查看当前聊天和 agent 全局队列" },
+  { command: "/approve [序号]", label: "批准当前 ACP 权限请求" },
+  { command: "/deny [序号]", label: "拒绝当前 ACP 权限请求" },
   { command: "/doctor", label: "运行配置和运行时自检" },
   { command: "/doctor agent|feishu|qq|state|chat", label: "只检查指定范围" },
   { command: "/agent", label: "查看可用 agent" },
@@ -124,6 +131,8 @@ const QQ_HELP: AgentShortcut[] = [
   { command: "/help", label: "查看帮助" },
   { command: "/status", label: "查看当前聊天状态" },
   { command: "/queue", label: "查看当前聊天和 agent 全局队列" },
+  { command: "/approve [序号]", label: "批准当前 ACP 权限请求" },
+  { command: "/deny [序号]", label: "拒绝当前 ACP 权限请求" },
   { command: "/doctor", label: "运行配置和运行时自检" },
   { command: "/doctor agent|qq|state|chat", label: "只检查指定范围" },
   { command: "/agent", label: "查看可用 agent" },
@@ -189,6 +198,9 @@ export function renderStatus(options: RenderStatusOptions) {
     activeTurn ? `状态：${code(`处理中 ${formatDuration(now - activeTurn.startedAt)}`, options.mode)}` : `状态：${code("空闲", options.mode)}`,
     activeTurn ? `Turn ID：${code(activeTurn.turnId, options.mode)}` : undefined,
     activeTurn ? `正在处理：${code(truncate(activeTurn.text, 80), options.mode)}` : undefined,
+    options.pendingPermission
+      ? `等待权限：${code(options.pendingPermission.toolTitle, options.mode)} ${code(options.pendingPermission.requestId, options.mode)} ${code(`${Math.max(0, options.pendingPermission.expiresAt - now)}ms`, options.mode)}`
+      : undefined,
     pendingBatchCount > 0 ? `正在合并消息：${code(String(pendingBatchCount), options.mode)}` : undefined,
     `排队消息：${code(String(options.conversationQueue.queued), options.mode)}`,
     `当前 agent 全局队列：${code(`${options.providerQueue.active ? "处理中" : "空闲"}，等待 ${options.providerQueue.queued}`, options.mode)}`,

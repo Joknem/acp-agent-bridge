@@ -1,6 +1,16 @@
 import type { AgentManager } from "../acp/AgentManager.js";
-import { AgentPromptError, type AgentPromptContent, type AgentTurn } from "../acp/types.js";
+import { AgentPromptError, type AgentPermissionContext, type AgentPromptContent, type AgentTurn } from "../acp/types.js";
 import type { AppConfig } from "../config.js";
+import {
+  cancelledPermissionResponse,
+  createPermissionRequestId,
+  permissionResponseFromCommand,
+  renderPermissionDecision,
+  renderPermissionRequest,
+  renderPermissionTimeout,
+  type ChatPermissionView,
+  type PermissionDecisionAction,
+} from "../core/ChatPermission.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
 import {
   renderAgentList,
@@ -23,6 +33,7 @@ import { truncate } from "../utils/text.js";
 import { QqAccessTokenProvider } from "./QqAccessToken.js";
 import { hasExplicitQqPromptText, summarizeQqBatch, type QqPromptItem } from "./qqPromptBatch.js";
 import { parseQqIncomingEvent, splitQqText, type QqConversation, type QqIncomingMessage } from "./qqMessages.js";
+import type { RequestPermissionResponse } from "@agentclientprotocol/sdk";
 
 type GatewayPayload = {
   op: number;
@@ -37,10 +48,12 @@ type ActiveTurn = {
   cwd: string;
   startedAt: number;
   text: string;
+  suppressError?: boolean;
 };
 
 type ChatState = IncomingPipelineState<QqPromptItem> & {
   activeTurn?: ActiveTurn;
+  pendingPermission?: PendingChatPermission;
   lastFailure?: TurnFailure;
 };
 
@@ -52,6 +65,12 @@ type QqCommandContext = {
 type QqReplyDestination = {
   conversation: QqConversation;
   replyToMessageId: string;
+};
+
+type PendingChatPermission = ChatPermissionView & {
+  destination: QqReplyDestination;
+  timer: NodeJS.Timeout;
+  resolve: (response: RequestPermissionResponse) => void;
 };
 
 const OP_DISPATCH = 0;
@@ -112,7 +131,14 @@ export class QqBot {
         ),
       )
       .register("queue", async (_command, context) => this.handleQueueCommand(context.message, context.state))
+      .register(["approve", "allow"], async (command, context) =>
+        this.handlePermissionDecisionCommand(context.message, context.state, command, "approve"),
+      )
+      .register(["deny", "reject"], async (command, context) =>
+        this.handlePermissionDecisionCommand(context.message, context.state, command, "deny"),
+      )
       .register("doctor", async (command, context) => this.handleDoctorCommand(context.message, context.state, command))
+      .register("cancel", async (_command, context) => this.handleCancelCommand(context.message, context.state))
       .register("reset", async (_command, context) => this.handleResetCommand(context.message))
       .register(["agent", "agents"], async (command, context) => this.handleAgentCommand(context.message, command));
   }
@@ -355,9 +381,23 @@ export class QqBot {
 
     try {
       const prompt = await this.buildAgentPrompt(items);
-      const turn = await this.agentManager.prompt(chatId, prompt, { turnId, queueSummary: summary });
+      const turn = await this.agentManager.prompt(chatId, prompt, {
+        turnId,
+        queueSummary: summary,
+        permissionHandler: (context) => this.requestChatPermission(replyDestination(firstMessage), state, context),
+      });
       await this.sendTurn(firstMessage.conversation, firstMessage.messageId, turn);
     } catch (error: unknown) {
+      if (activeTurn.suppressError) {
+        this.logger.info("suppressed cancelled qq turn error", {
+          chatId,
+          turnId,
+          provider,
+          message: errorMessage(error),
+          text: truncate(summary, 120),
+        });
+        return;
+      }
       state.lastFailure = createTurnFailure(error, {
         turnId,
         provider,
@@ -367,11 +407,15 @@ export class QqBot {
       this.logTurnError(chatId, activeTurn, error);
       await this.replies.sendMarkdown(replyDestination(firstMessage), this.renderTurnError(error, activeTurn), "执行失败", "error");
     } finally {
+      this.cancelPendingPermission(state);
       if (state.activeTurn === activeTurn) state.activeTurn = undefined;
     }
   }
 
   private async handleResetCommand(message: QqIncomingMessage) {
+    const state = this.getChatState(message.conversation.chatId);
+    if (state.activeTurn) state.activeTurn.suppressError = true;
+    this.cancelPendingPermission(state);
     const reset = await this.agentManager.reset(message.conversation.chatId);
     await this.sendCommandReply(
       message,
@@ -410,6 +454,52 @@ export class QqBot {
     await this.sendCommandReply(message, this.renderQueue(message.conversation.chatId, state), "队列状态", "queue");
   }
 
+  private async handlePermissionDecisionCommand(
+    message: QqIncomingMessage,
+    state: ChatState,
+    command: SlashCommand,
+    action: PermissionDecisionAction,
+  ) {
+    const pending = state.pendingPermission;
+    if (!pending) {
+      await this.sendCommandReply(message, "当前没有等待确认的权限请求。", "权限请求");
+      return;
+    }
+
+    const result = permissionResponseFromCommand(pending.request, action, command.args[0]);
+    if ("error" in result) {
+      await this.sendCommandReply(
+        message,
+        [
+          renderPermissionDecision(action, result, "plain"),
+          "",
+          "当前可选项：",
+          ...pending.request.options.map((option, index) => `- ${index + 1}. ${option.name} ${option.kind}`),
+        ].join("\n"),
+        "权限选择无效",
+      );
+      return;
+    }
+
+    this.resolvePendingPermission(state, pending, result.response);
+    await this.sendCommandReply(message, renderPermissionDecision(action, result, "plain"), action === "approve" ? "权限已批准" : "权限已拒绝");
+  }
+
+  private async handleCancelCommand(message: QqIncomingMessage, state: ChatState) {
+    if (state.activeTurn) state.activeTurn.suppressError = true;
+    const hadPendingPermission = this.cancelPendingPermission(state);
+    const cancelled = await this.agentManager.cancel(message.conversation.chatId).catch((error: unknown) => {
+      this.logger.warn("failed to cancel qq active turn", errorMessage(error));
+      return false;
+    });
+
+    await this.sendCommandReply(
+      message,
+      state.activeTurn || hadPendingPermission || cancelled ? "已请求取消当前 agent 任务。" : "当前 QQ 会话没有正在使用的 agent session。",
+      "取消任务",
+    );
+  }
+
   private async handleDoctorCommand(message: QqIncomingMessage, state: ChatState, command: SlashCommand) {
     const report = await runDoctor({
       config: this.config,
@@ -439,6 +529,13 @@ export class QqBot {
     return renderStatus({
       mode: "plain",
       activeTurn: state.activeTurn,
+      pendingPermission: state.pendingPermission
+        ? {
+            requestId: state.pendingPermission.requestId,
+            toolTitle: state.pendingPermission.request.toolCall.title ?? state.pendingPermission.request.toolCall.toolCallId,
+            expiresAt: state.pendingPermission.expiresAt,
+          }
+        : undefined,
       pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
       conversationQueue: { queued: queueStatus.queued },
       providerQueue: { active: Boolean(providerQueue.active), queued: providerQueue.queued },
@@ -454,7 +551,7 @@ export class QqBot {
       messageMergeWindowMs: this.config.qq.messageMergeWindowMs,
       chatSessionCount: this.stateStore.chatSessionCount(),
       processedMessageCount: this.stateStore.processedMessageCount(),
-      commands: ["/help", "/status", "/queue", "/doctor", "/agent", "/agent <name>", "/reset"],
+      commands: ["/help", "/status", "/queue", "/approve", "/deny", "/doctor", "/agent", "/agent <name>", "/cancel", "/reset"],
     });
   }
 
@@ -678,6 +775,67 @@ export class QqBot {
       this.chats.set(chatId, state);
     }
     return state;
+  }
+
+  private requestChatPermission(
+    destination: QqReplyDestination,
+    state: ChatState,
+    context: AgentPermissionContext,
+  ): Promise<RequestPermissionResponse> {
+    this.cancelPendingPermission(state);
+
+    const requestId = createPermissionRequestId(context.turnId);
+    const expiresAt = Date.now() + this.config.acp.permissionRequestTimeoutMs;
+
+    return new Promise((resolve) => {
+      const pending: PendingChatPermission = {
+        requestId,
+        provider: context.provider,
+        cwd: context.cwd,
+        sessionId: context.sessionId,
+        turnId: context.turnId,
+        expiresAt,
+        request: context.request,
+        destination,
+        resolve,
+        timer: setTimeout(() => {
+          if (state.pendingPermission !== pending) return;
+          state.pendingPermission = undefined;
+          resolve(cancelledPermissionResponse());
+          void this.replies.sendMarkdown(destination, renderPermissionTimeout(pending, "plain"), "权限已超时").catch((error: unknown) => {
+            this.logger.warn("failed to send qq permission timeout", {
+              chatId: destination.conversation.chatId,
+              message: errorMessage(error),
+            });
+          });
+        }, this.config.acp.permissionRequestTimeoutMs),
+      };
+
+      state.pendingPermission = pending;
+      void this.replies.sendMarkdown(destination, renderPermissionRequest(pending, "plain"), "ACP 权限请求").catch((error: unknown) => {
+        if (state.pendingPermission !== pending) return;
+        this.logger.warn("failed to send qq permission request", {
+          chatId: destination.conversation.chatId,
+          message: errorMessage(error),
+        });
+        this.resolvePendingPermission(state, pending, cancelledPermissionResponse());
+      });
+    });
+  }
+
+  private resolvePendingPermission(state: ChatState, pending: PendingChatPermission, response: RequestPermissionResponse) {
+    if (state.pendingPermission !== pending) return false;
+
+    clearTimeout(pending.timer);
+    state.pendingPermission = undefined;
+    pending.resolve(response);
+    return true;
+  }
+
+  private cancelPendingPermission(state: ChatState) {
+    const pending = state.pendingPermission;
+    if (!pending) return false;
+    return this.resolvePendingPermission(state, pending, cancelledPermissionResponse());
   }
 
   private async authHeaders() {

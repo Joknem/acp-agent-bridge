@@ -5,6 +5,16 @@ import type { AppConfig } from "../config.js";
 import type { Logger } from "../logger.js";
 import { CommandRouter, isSlashCommand, type SlashCommand } from "../core/CommandRouter.js";
 import {
+  cancelledPermissionResponse,
+  createPermissionRequestId,
+  permissionResponseFromCommand,
+  renderPermissionDecision,
+  renderPermissionRequest,
+  renderPermissionTimeout,
+  type ChatPermissionView,
+  type PermissionDecisionAction,
+} from "../core/ChatPermission.js";
+import {
   renderAgentList,
   renderAgentUsage,
   renderHelp,
@@ -33,7 +43,8 @@ import { inferImageMimeType, readNodeStreamToBuffer } from "../utils/media.js";
 import { truncate } from "../utils/text.js";
 import type { AgentManager } from "../acp/AgentManager.js";
 import { AgentPromptError } from "../acp/types.js";
-import type { AgentPromptContent, AgentTurn } from "../acp/types.js";
+import type { AgentPermissionContext, AgentPromptContent, AgentTurn } from "../acp/types.js";
+import type { RequestPermissionResponse } from "@agentclientprotocol/sdk";
 
 type ReceiveMessageEvent = NonNullable<lark.EventHandles["im.message.receive_v1"]> extends (data: infer T) => unknown
   ? T
@@ -82,9 +93,15 @@ type FeishuCommandContext = {
 
 type ChatState = IncomingPipelineState<PendingIncoming> & {
   activeTurn?: ActiveTurn;
+  pendingPermission?: PendingChatPermission;
   lastFailure?: TurnFailure;
   lastQueueNoticeAt?: number;
   lastBindNoticeAt?: number;
+};
+
+type PendingChatPermission = ChatPermissionView & {
+  timer: NodeJS.Timeout;
+  resolve: (response: RequestPermissionResponse) => void;
 };
 
 const QUEUE_NOTICE_COOLDOWN_MS = 30_000;
@@ -155,6 +172,8 @@ export class FeishuBot {
       .register("unbind", async (_command, context) => this.handleUnbindCommand(context.chatId, context.chatType))
       .register("status", async (_command, context) => this.handleStatusCommand(context.chatId, context.chatType))
       .register("queue", async (_command, context) => this.handleQueueCommand(context.chatId))
+      .register(["approve", "allow"], async (command, context) => this.handlePermissionDecisionCommand(context.chatId, command, "approve"))
+      .register(["deny", "reject"], async (command, context) => this.handlePermissionDecisionCommand(context.chatId, command, "deny"))
       .register("doctor", async (command, context) => this.handleDoctorCommand(context.chatId, command, context.chatType))
       .register("ping", async (_command, context) => this.handlePingCommand(context.chatId))
       .register("cancel", async (_command, context) => this.handleCancelCommand(context.chatId))
@@ -371,7 +390,11 @@ export class FeishuBot {
       }
 
       const prompt = await this.buildAgentPrompt(items);
-      const turn = await this.agentManager.prompt(chatId, prompt, { turnId, queueSummary: summary });
+      const turn = await this.agentManager.prompt(chatId, prompt, {
+        turnId,
+        queueSummary: summary,
+        permissionHandler: (context) => this.requestChatPermission(chatId, context),
+      });
       await this.sendTurn(chatId, turn);
       await this.finishAcknowledgements(ackStates, "success");
     } catch (error: unknown) {
@@ -395,6 +418,7 @@ export class FeishuBot {
       });
       throw error;
     } finally {
+      this.cancelPendingPermission(chatId);
       if (state.activeTurn === activeTurn) {
         state.activeTurn = undefined;
       }
@@ -633,6 +657,7 @@ export class FeishuBot {
 
   private async handleResetCommand(chatId: string) {
     this.markActiveTurnSuppressed(chatId);
+    this.cancelPendingPermission(chatId);
     const reset = await this.agentManager.reset(chatId);
     await this.sendMarkdown(
       chatId,
@@ -762,6 +787,33 @@ export class FeishuBot {
     await this.sendMarkdown(chatId, this.renderQueue(chatId), "队列状态");
   }
 
+  private async handlePermissionDecisionCommand(chatId: string, command: SlashCommand, action: PermissionDecisionAction) {
+    const state = this.getChatState(chatId);
+    const pending = state.pendingPermission;
+    if (!pending) {
+      await this.sendMarkdown(chatId, "当前没有等待确认的权限请求。", "权限请求");
+      return;
+    }
+
+    const result = permissionResponseFromCommand(pending.request, action, command.args[0]);
+    if ("error" in result) {
+      await this.sendMarkdown(
+        chatId,
+        [
+          renderPermissionDecision(action, result, "markdown"),
+          "",
+          "当前可选项：",
+          ...pending.request.options.map((option, index) => `- ${index + 1}. \`${option.name}\` \`${option.kind}\``),
+        ].join("\n"),
+        "权限选择无效",
+      );
+      return;
+    }
+
+    this.resolvePendingPermission(chatId, pending, result.response);
+    await this.sendMarkdown(chatId, renderPermissionDecision(action, result, "markdown"), action === "approve" ? "权限已批准" : "权限已拒绝");
+  }
+
   private async handleDoctorCommand(chatId: string, command: SlashCommand, chatType?: string) {
     const report = await runDoctor({
       config: this.config,
@@ -796,6 +848,13 @@ export class FeishuBot {
     return renderStatus({
       mode: "markdown",
       activeTurn: state.activeTurn,
+      pendingPermission: state.pendingPermission
+        ? {
+            requestId: state.pendingPermission.requestId,
+            toolTitle: state.pendingPermission.request.toolCall.title ?? state.pendingPermission.request.toolCall.toolCallId,
+            expiresAt: state.pendingPermission.expiresAt,
+          }
+        : undefined,
       pendingBatchCount: state.pendingBatcher?.pendingCount() ?? 0,
       conversationQueue: { queued: queueStatus.queued },
       providerQueue: { active: Boolean(providerQueue.active), queued: providerQueue.queued },
@@ -830,7 +889,22 @@ export class FeishuBot {
       bindingCount: bindings.length,
       chatSessionCount: this.stateStore.chatSessionCount(),
       processedMessageCount: this.stateStore.processedMessageCount(),
-      commands: ["/help", "/agent", "/cwd", "/project", "/bind", "/unbind", "/status", "/queue", "/doctor", "/ping", "/cancel", "/reset"],
+      commands: [
+        "/help",
+        "/agent",
+        "/cwd",
+        "/project",
+        "/bind",
+        "/unbind",
+        "/status",
+        "/queue",
+        "/approve",
+        "/deny",
+        "/doctor",
+        "/ping",
+        "/cancel",
+        "/reset",
+      ],
     });
   }
 
@@ -1147,6 +1221,58 @@ export class FeishuBot {
     return state;
   }
 
+  private requestChatPermission(chatId: string, context: AgentPermissionContext): Promise<RequestPermissionResponse> {
+    const state = this.getChatState(chatId);
+    this.cancelPendingPermission(chatId);
+
+    const requestId = createPermissionRequestId(context.turnId);
+    const expiresAt = Date.now() + this.config.acp.permissionRequestTimeoutMs;
+
+    return new Promise((resolve) => {
+      const pending: PendingChatPermission = {
+        requestId,
+        provider: context.provider,
+        cwd: context.cwd,
+        sessionId: context.sessionId,
+        turnId: context.turnId,
+        expiresAt,
+        request: context.request,
+        resolve,
+        timer: setTimeout(() => {
+          if (state.pendingPermission !== pending) return;
+          state.pendingPermission = undefined;
+          resolve(cancelledPermissionResponse());
+          void this.sendMarkdown(chatId, renderPermissionTimeout(pending, "markdown"), "权限已超时").catch((error: unknown) => {
+            this.logger.warn("failed to send permission timeout", { chatId, message: errorMessage(error) });
+          });
+        }, this.config.acp.permissionRequestTimeoutMs),
+      };
+
+      state.pendingPermission = pending;
+      void this.sendMarkdown(chatId, renderPermissionRequest(pending, "markdown"), "ACP 权限请求").catch((error: unknown) => {
+        if (state.pendingPermission !== pending) return;
+        this.logger.warn("failed to send permission request", { chatId, message: errorMessage(error) });
+        this.resolvePendingPermission(chatId, pending, cancelledPermissionResponse());
+      });
+    });
+  }
+
+  private resolvePendingPermission(chatId: string, pending: PendingChatPermission, response: RequestPermissionResponse) {
+    const state = this.getChatState(chatId);
+    if (state.pendingPermission !== pending) return false;
+
+    clearTimeout(pending.timer);
+    state.pendingPermission = undefined;
+    pending.resolve(response);
+    return true;
+  }
+
+  private cancelPendingPermission(chatId: string) {
+    const pending = this.getChatState(chatId).pendingPermission;
+    if (!pending) return false;
+    return this.resolvePendingPermission(chatId, pending, cancelledPermissionResponse());
+  }
+
   private async maybeHandleUnboundGroupMessage(chatId: string, chatType?: string) {
     if (!isGroupChat(chatType) || this.stateStore.getBinding(chatId)) return false;
 
@@ -1197,12 +1323,13 @@ export class FeishuBot {
 
   private async cancelActiveTurnForControl(chatId: string) {
     const hadActiveTurn = this.markActiveTurnSuppressed(chatId);
+    const hadPendingPermission = this.cancelPendingPermission(chatId);
     const cancelled = await this.agentManager.cancel(chatId).catch((error: unknown) => {
       this.logger.warn("failed to cancel active turn for control command", errorMessage(error));
       return false;
     });
 
-    return hadActiveTurn || cancelled;
+    return hadActiveTurn || hadPendingPermission || cancelled;
   }
 
   private logTurnError(chatId: string, error: unknown) {

@@ -35,7 +35,8 @@ const envSchema = z.object({
   FEISHU_IMAGE_MAX_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   FEISHU_MESSAGE_MERGE_WINDOW_MS: z.coerce.number().int().min(0).default(2000),
   ACP_PROMPT_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
-  ACP_PERMISSION_MODE: z.enum(["allow_once", "allow_always", "deny"]).default("allow_once"),
+  ACP_PERMISSION_MODE: z.enum(["allow_once", "allow_always", "deny", "ask_in_chat"]).default("allow_once"),
+  ACP_PERMISSION_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(60000),
   QQ_BOT_ENABLED: z
     .string()
     .optional()
@@ -99,6 +100,7 @@ export function loadConfig() {
       agents,
       promptTimeoutMs: parsed.data.ACP_PROMPT_TIMEOUT_MS,
       permissionMode: parsed.data.ACP_PERMISSION_MODE,
+      permissionRequestTimeoutMs: parsed.data.ACP_PERMISSION_REQUEST_TIMEOUT_MS,
     },
     qq: {
       enabled: parsed.data.QQ_BOT_ENABLED,

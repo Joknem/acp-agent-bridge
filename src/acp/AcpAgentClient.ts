@@ -8,6 +8,7 @@ import type {
   ContentBlock,
   ReadTextFileRequest,
   RequestPermissionRequest,
+  RequestPermissionResponse,
   SessionNotification,
   ToolCallContent,
   WriteTextFileRequest,
@@ -21,6 +22,7 @@ import { permissionDecision } from "./PermissionPolicy.js";
 import {
   AgentPromptError,
   type AcpAgentProvider,
+  type AgentPermissionHandler,
   type AgentPromptContent,
   type AgentPromptOptions,
   type AgentSession,
@@ -39,6 +41,7 @@ export class AcpAgentClient {
   private activeTurns = new Map<string, TurnBuffer>();
   private cancelledSessions = new Set<string>();
   private sessionCwds = new Map<string, string>();
+  private permissionHandlers = new Map<string, { turnId?: string; handler: AgentPermissionHandler }>();
   private stderrTail: string[] = [];
   private initPromise?: Promise<void>;
   private agentCapabilities?: AgentCapabilities;
@@ -106,6 +109,9 @@ export class AcpAgentClient {
     this.assertPromptSupported(prompt);
     const buffer: TurnBuffer = { answer: [], thought: [], tools: [] };
     this.activeTurns.set(session.sessionId, buffer);
+    if (options.permissionHandler) {
+      this.permissionHandlers.set(session.sessionId, { turnId: options.turnId, handler: options.permissionHandler });
+    }
     const startedAt = Date.now();
     const promptSummary = summarizePrompt(prompt);
 
@@ -178,6 +184,7 @@ export class AcpAgentClient {
     } finally {
       this.activeTurns.delete(session.sessionId);
       this.cancelledSessions.delete(session.sessionId);
+      this.permissionHandlers.delete(session.sessionId);
     }
   }
 
@@ -328,16 +335,53 @@ export class AcpAgentClient {
       return { outcome: { outcome: "cancelled" as const } };
     }
 
+    if (this.config.acp.permissionMode === "ask_in_chat") {
+      const handler = this.permissionHandlers.get(params.sessionId);
+      if (!handler) {
+        this.appendTool(params.sessionId, "Permission cancelled because no chat permission handler is active");
+        return { outcome: { outcome: "cancelled" as const } };
+      }
+
+      try {
+        const decision = await handler.handler({
+          provider: this.provider.name,
+          cwd: this.getSessionCwd(params.sessionId),
+          sessionId: params.sessionId,
+          turnId: handler.turnId,
+          request: params,
+        });
+        this.appendPermissionDecision(params, decision, "in chat");
+        return decision;
+      } catch (error: unknown) {
+        this.logger.warn("chat permission handler failed", {
+          provider: this.provider.name,
+          sessionId: params.sessionId,
+          message: errorMessage(error),
+        });
+        this.appendTool(params.sessionId, `Permission cancelled because chat approval failed: ${errorMessage(error)}`);
+        return { outcome: { outcome: "cancelled" as const } };
+      }
+    }
+
     const decision = permissionDecision(this.config.acp.permissionMode, params.options);
     if (decision.outcome.outcome === "cancelled") {
       this.appendTool(params.sessionId, `Permission cancelled by policy: ${this.config.acp.permissionMode}`);
       return decision;
     }
 
+    this.appendPermissionDecision(params, decision, `by policy ${this.config.acp.permissionMode}`);
+    return decision;
+  }
+
+  private appendPermissionDecision(params: RequestPermissionRequest, decision: RequestPermissionResponse, source: string) {
+    if (decision.outcome.outcome === "cancelled") {
+      this.appendTool(params.sessionId, `Permission cancelled ${source}`);
+      return;
+    }
+
     const selected = decision.outcome;
     const option = params.options.find((item) => item.optionId === selected.optionId);
-    this.appendTool(params.sessionId, `Permission selected by policy ${this.config.acp.permissionMode}: ${option?.name ?? selected.optionId}`);
-    return decision;
+    this.appendTool(params.sessionId, `Permission selected ${source}: ${option?.name ?? selected.optionId}`);
   }
 
   private async sessionUpdate(params: SessionNotification) {

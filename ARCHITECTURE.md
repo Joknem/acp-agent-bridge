@@ -66,7 +66,7 @@ This layer is platform-neutral. It is the beginning of a shared pipeline inspire
 
 `AgentManager` owns provider selection, chat cwd, ACP session lifecycle, persisted session resume, and per-provider prompt queues. A provider queue prevents two chats from concurrently prompting the same ACP process.
 
-`AcpAgentClient` owns one ACP provider process and handles ACP protocol initialization, prompt calls, session resume/load, session updates, permission requests, cwd-bound file access, cancellation, and timeout handling. Permission requests use the configured `ACP_PERMISSION_MODE` policy instead of a hard-coded approval choice.
+`AcpAgentClient` owns one ACP provider process and handles ACP protocol initialization, prompt calls, session resume/load, session updates, permission requests, cwd-bound file access, cancellation, and timeout handling. Permission requests use the configured `ACP_PERMISSION_MODE` policy instead of a hard-coded approval choice. In `ask_in_chat` mode, permission requests are delegated through the active prompt's permission handler so the Feishu/QQ adapter can ask the current chat to approve or deny the ACP option.
 
 ### State
 

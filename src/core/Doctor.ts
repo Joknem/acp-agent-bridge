@@ -135,6 +135,7 @@ async function buildConfigSection(config: AppConfig): Promise<DoctorSection> {
       ? warn("ACP 超时", `${config.acp.promptTimeoutMs}ms 偏短，长任务容易超时`)
       : ok("ACP 超时", `${config.acp.promptTimeoutMs}ms`),
     ok("权限策略", config.acp.permissionMode),
+    ok("权限等待", `${config.acp.permissionRequestTimeoutMs}ms`),
     config.messageMergeWindowMs === 0
       ? warn("飞书消息合并", "已关闭，图片和说明文字可能被拆成两次 prompt")
       : ok("飞书消息合并", `${config.messageMergeWindowMs}ms`),

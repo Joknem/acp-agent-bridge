@@ -40,6 +40,7 @@ FEISHU_IMAGE_MAX_BYTES=10485760
 FEISHU_MESSAGE_MERGE_WINDOW_MS=2000
 ACP_PROMPT_TIMEOUT_MS=120000
 ACP_PERMISSION_MODE=allow_once
+ACP_PERMISSION_REQUEST_TIMEOUT_MS=60000
 STATE_FILE=.data/state.json
 
 # QQ official bot adapter. Disabled unless explicitly enabled.
@@ -78,6 +79,7 @@ AGENT_KIMI_COMMAND=/home/joknem/.kimi-code/bin/kimi
 - `allow_once`：默认值，优先选择 agent 提供的单次允许选项。
 - `allow_always`：优先选择长期允许选项，适合非常信任的本地私有环境。
 - `deny`：优先选择拒绝选项；agent 没提供拒绝选项时返回 cancelled。
+- `ask_in_chat`：把权限请求发回当前飞书/QQ 会话，使用 `/approve [序号]` 或 `/deny [序号]` 选择；超过 `ACP_PERMISSION_REQUEST_TIMEOUT_MS` 会自动 cancelled。
 
 Kimi CLI 需要已登录：
 
