@@ -13,6 +13,7 @@ assert.equal(c2c?.eventType, "C2C_MESSAGE_CREATE");
 assert.equal(c2c.messageId, "msg-c2c-1");
 assert.equal(c2c.conversation.type, "c2c");
 assert.equal(c2c.conversation.chatId, "qq:c2c:user-openid-1");
+assert.deepEqual(c2c.senderIds, ["user-openid-1"]);
 assert.equal(c2c.text, "你好 bot");
 assert.equal(c2c.imageAttachments.length, 0);
 assert.equal(c2c.summary, "你好 bot");
@@ -30,6 +31,7 @@ assert.equal(group?.eventType, "GROUP_AT_MESSAGE_CREATE");
 assert.equal(group.messageId, "msg-group-1");
 assert.equal(group.conversation.type, "group");
 assert.equal(group.conversation.chatId, "qq:group:group-openid-1");
+assert.deepEqual(group.senderIds, ["member-openid-1"]);
 assert.equal(group.text, "帮我看一下这个项目");
 assert.equal(group.summary, "帮我看一下这个项目");
 

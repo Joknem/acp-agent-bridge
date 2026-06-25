@@ -76,6 +76,8 @@ Persisted state includes per-chat provider/cwd, per-chat/provider ACP session ID
 
 `ACP_ALLOWED_CWD_ROOTS` provides a path boundary for chat-driven cwd changes. Platform adapters validate `/cwd`, `/project`, and `/bind` targets before updating state, and `AgentManager` re-checks persisted cwd values before creating or resuming ACP sessions.
 
+Control commands can also be protected by `CONTROL_COMMAND_POLICY=allowlist`. In that mode, Feishu and QQ adapters extract stable sender identifiers from incoming events and reject sensitive slash commands unless one of those IDs is listed in `CONTROL_COMMAND_ALLOWED_USERS`.
+
 The state file also stores lightweight runtime snapshots for diagnostics: active turns, pending permission requests, pending message-batch counts, and conversation queue summaries. These snapshots are intentionally not replayed after restart because queued work is represented by in-memory closures; they are used by `/status` and `/doctor` to explain what was interrupted before the process stopped.
 
 ### Rendering

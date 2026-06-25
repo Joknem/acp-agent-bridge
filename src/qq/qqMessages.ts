@@ -14,6 +14,7 @@ export type QqIncomingMessage = {
   eventType: "C2C_MESSAGE_CREATE" | "GROUP_AT_MESSAGE_CREATE";
   messageId: string;
   conversation: QqConversation;
+  senderIds: string[];
   text: string;
   imageAttachments: QqImageAttachment[];
   summary: string;
@@ -48,6 +49,7 @@ export function parseQqIncomingEvent(eventType: string | undefined, data: unknow
         chatId: `qq:c2c:${openid}`,
         openid,
       },
+      senderIds: [openid],
       text,
       imageAttachments,
       summary: summarizeQqMessage(text, imageAttachments.length),
@@ -56,6 +58,8 @@ export function parseQqIncomingEvent(eventType: string | undefined, data: unknow
 
   if (eventType === "GROUP_AT_MESSAGE_CREATE") {
     const groupOpenid = stringField(record, "group_openid");
+    const author = objectField(record, "author");
+    const senderIds = [stringField(author, "member_openid"), stringField(author, "user_openid")].filter(Boolean);
     if (!groupOpenid) return undefined;
     return {
       eventType,
@@ -65,6 +69,7 @@ export function parseQqIncomingEvent(eventType: string | undefined, data: unknow
         chatId: `qq:group:${groupOpenid}`,
         groupOpenid,
       },
+      senderIds,
       text,
       imageAttachments,
       summary: summarizeQqMessage(text, imageAttachments.length),

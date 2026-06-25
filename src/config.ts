@@ -1,6 +1,7 @@
 import path from "node:path";
 import dotenv from "dotenv";
 import { z } from "zod";
+import { parseControlAllowedUsers } from "./core/ControlAccess.js";
 import { parseAllowedCwdRoots } from "./core/CwdPolicy.js";
 
 dotenv.config({
@@ -39,6 +40,8 @@ const envSchema = z.object({
   ACP_PROMPT_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   ACP_PERMISSION_MODE: z.enum(["allow_once", "allow_always", "deny", "ask_in_chat"]).default("allow_once"),
   ACP_PERMISSION_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(60000),
+  CONTROL_COMMAND_POLICY: z.enum(["open", "allowlist"]).default("open"),
+  CONTROL_COMMAND_ALLOWED_USERS: z.string().optional().default(""),
   QQ_BOT_ENABLED: z
     .string()
     .optional()
@@ -118,6 +121,10 @@ export function loadConfig() {
       reconnectMs: parsed.data.QQ_BOT_RECONNECT_MS,
       imageMaxBytes: parsed.data.QQ_BOT_IMAGE_MAX_BYTES,
       messageMergeWindowMs: parsed.data.QQ_BOT_MESSAGE_MERGE_WINDOW_MS,
+    },
+    control: {
+      policy: parsed.data.CONTROL_COMMAND_POLICY,
+      allowedUsers: parseControlAllowedUsers(parsed.data.CONTROL_COMMAND_ALLOWED_USERS),
     },
     debug: parsed.data.DEBUG,
     showThinkingTool: parsed.data.SHOW_THINKING_TOOL,

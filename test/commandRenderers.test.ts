@@ -82,6 +82,8 @@ function testStatus() {
     defaultAgent: "codex",
     acpTimeoutMs: 600_000,
     permissionMode: "allow_once",
+    controlPolicy: "allowlist",
+    controlAllowedUserCount: 2,
     messageMergeWindowMs: 2_000,
     ack: { mode: "reaction", processingReaction: "THINKING", doneReaction: "DONE" },
     sendTimeoutMs: 15_000,
@@ -106,6 +108,7 @@ function testStatus() {
   assert(rendered.includes("消息去重缓存：`8`"));
   assert(rendered.includes("agent 命令：`codex --model gpt-5 --token <redacted>`"));
   assert(rendered.includes("权限策略：`allow_once`"));
+  assert(rendered.includes("控制命令权限：`allowlist，users 2`"));
 
   const recovered = renderStatus({
     mode: "markdown",

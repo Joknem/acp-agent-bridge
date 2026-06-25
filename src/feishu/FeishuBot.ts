@@ -23,6 +23,7 @@ import {
   renderUnknownCommand,
 } from "../core/CommandRenderers.js";
 import { formatCommandForDisplay } from "../core/CommandRedaction.js";
+import { controlDeniedMessage, isControlAllowed } from "../core/ControlAccess.js";
 import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import { assertCwdAllowed } from "../core/CwdPolicy.js";
@@ -85,11 +86,13 @@ type BindingTarget = {
 type ProcessTextOptions = {
   ackStates?: AckState[];
   chatType?: string;
+  senderIds?: string[];
 };
 
 type FeishuCommandContext = {
   chatId: string;
   chatType?: string;
+  senderIds: string[];
 };
 
 type ChatState = IncomingPipelineState<PendingIncoming> & {
@@ -166,19 +169,20 @@ export class FeishuBot {
   private createCommandRouter() {
     return new CommandRouter<FeishuCommandContext>()
       .register("help", async (_command, context) => this.handleHelpCommand(context.chatId))
-      .register(["agent", "agents"], async (command, context) => this.handleAgentCommand(context.chatId, command))
-      .register("cwd", async (command, context) => this.handleCwdCommand(context.chatId, command.raw, context.chatType))
-      .register("project", async (command, context) => this.handleProjectCommand(context.chatId, command, context.chatType))
-      .register("bind", async (command, context) => this.handleBindCommand(context.chatId, command, context.chatType))
-      .register("unbind", async (_command, context) => this.handleUnbindCommand(context.chatId, context.chatType))
-      .register("status", async (_command, context) => this.handleStatusCommand(context.chatId, context.chatType))
-      .register("queue", async (_command, context) => this.handleQueueCommand(context.chatId))
-      .register(["approve", "allow"], async (command, context) => this.handlePermissionDecisionCommand(context.chatId, command, "approve"))
-      .register(["deny", "reject"], async (command, context) => this.handlePermissionDecisionCommand(context.chatId, command, "deny"))
-      .register("doctor", async (command, context) => this.handleDoctorCommand(context.chatId, command, context.chatType))
+      .register("whoami", async (_command, context) => this.handleWhoamiCommand(context))
+      .register(["agent", "agents"], this.restricted(async (command, context) => this.handleAgentCommand(context.chatId, command)))
+      .register("cwd", this.restricted(async (command, context) => this.handleCwdCommand(context.chatId, command.raw, context.chatType)))
+      .register("project", this.restricted(async (command, context) => this.handleProjectCommand(context.chatId, command, context.chatType)))
+      .register("bind", this.restricted(async (command, context) => this.handleBindCommand(context.chatId, command, context.chatType)))
+      .register("unbind", this.restricted(async (_command, context) => this.handleUnbindCommand(context.chatId, context.chatType)))
+      .register("status", this.restricted(async (_command, context) => this.handleStatusCommand(context.chatId, context.chatType)))
+      .register("queue", this.restricted(async (_command, context) => this.handleQueueCommand(context.chatId)))
+      .register(["approve", "allow"], this.restricted(async (command, context) => this.handlePermissionDecisionCommand(context.chatId, command, "approve")))
+      .register(["deny", "reject"], this.restricted(async (command, context) => this.handlePermissionDecisionCommand(context.chatId, command, "deny")))
+      .register("doctor", this.restricted(async (command, context) => this.handleDoctorCommand(context.chatId, command, context.chatType)))
       .register("ping", async (_command, context) => this.handlePingCommand(context.chatId))
-      .register("cancel", async (_command, context) => this.handleCancelCommand(context.chatId))
-      .register("reset", async (_command, context) => this.handleResetCommand(context.chatId));
+      .register("cancel", this.restricted(async (_command, context) => this.handleCancelCommand(context.chatId)))
+      .register("reset", this.restricted(async (_command, context) => this.handleResetCommand(context.chatId)));
   }
 
   private createIncomingPipeline() {
@@ -234,6 +238,7 @@ export class FeishuBot {
 
   private async handleMessage(event: ReceiveMessageEvent) {
     const message = event.message;
+    const senderIds = feishuSenderIds(event.sender.sender_id);
     if (!this.stateStore.markProcessedMessage(`feishu:${message.message_id}`)) {
       this.logger.info("ignored duplicate feishu message", {
         messageId: message.message_id,
@@ -248,6 +253,7 @@ export class FeishuBot {
       chatType: message.chat_type,
       messageType: message.message_type,
       senderType: event.sender.sender_type,
+      senderIds: maskSenderIds(senderIds),
       mentionCount: message.mentions?.length ?? 0,
     });
 
@@ -279,7 +285,7 @@ export class FeishuBot {
     }
 
     if (incoming.kind === "text" && isSlashCommand(incoming.text)) {
-      await this.processIncoming(message.chat_id, message.message_id, incoming, { chatType: message.chat_type });
+      await this.processIncoming(message.chat_id, message.message_id, incoming, { chatType: message.chat_type, senderIds });
       return;
     }
 
@@ -324,7 +330,7 @@ export class FeishuBot {
     try {
       const handledCommand = await this.commandRouter.dispatch(
         text,
-        { chatId, chatType: options.chatType },
+        { chatId, chatType: options.chatType, senderIds: options.senderIds ?? [] },
         async (command, context) => this.handleUnknownCommand(context.chatId, command),
       );
       if (handledCommand) {
@@ -679,6 +685,19 @@ export class FeishuBot {
     await this.sendMarkdown(chatId, this.renderHelp(), "帮助");
   }
 
+  private async handleWhoamiCommand(context: FeishuCommandContext) {
+    await this.sendMarkdown(
+      context.chatId,
+      [
+        "当前 sender ids：",
+        ...(context.senderIds.length ? context.senderIds.map((id) => `- \`${id}\``) : ["- `unknown`"]),
+        "",
+        "如果启用 `CONTROL_COMMAND_POLICY=allowlist`，把其中一个 id 加入 `CONTROL_COMMAND_ALLOWED_USERS`。",
+      ].join("\n"),
+      "Sender ID",
+    );
+  }
+
   private async handleUnknownCommand(chatId: string, command: SlashCommand) {
     await this.sendMarkdown(chatId, renderUnknownCommand(command.token, { mode: "markdown", platform: "feishu" }), "未知命令");
   }
@@ -901,6 +920,8 @@ export class FeishuBot {
       defaultAgent: this.config.acp.defaultAgent,
       acpTimeoutMs: this.config.acp.promptTimeoutMs,
       permissionMode: this.config.acp.permissionMode,
+      controlPolicy: this.config.control.policy,
+      controlAllowedUserCount: this.config.control.allowedUsers.length,
       messageMergeWindowMs: this.config.messageMergeWindowMs,
       ack: {
         mode: this.config.ackMode,
@@ -919,6 +940,7 @@ export class FeishuBot {
       processedMessageCount: this.stateStore.processedMessageCount(),
       commands: [
         "/help",
+        "/whoami",
         "/agent",
         "/cwd",
         "/project",
@@ -1392,6 +1414,23 @@ export class FeishuBot {
     }
   }
 
+  private restricted(handler: (command: SlashCommand, context: FeishuCommandContext) => Promise<void> | void) {
+    return async (command: SlashCommand, context: FeishuCommandContext) => {
+      if (isControlAllowed(this.config.control, { senderIds: context.senderIds })) {
+        await handler(command, context);
+        return;
+      }
+
+      this.logger.warn("rejected feishu control command", {
+        chatId: context.chatId,
+        command: command.token,
+        senderIds: maskSenderIds(context.senderIds),
+        policy: this.config.control.policy,
+      });
+      await this.sendMarkdown(context.chatId, controlDeniedMessage(this.config.control, { senderIds: context.senderIds }), "权限不足");
+    };
+  }
+
   private markActiveTurnSuppressed(chatId: string) {
     const activeTurn = this.getChatState(chatId).activeTurn;
     if (activeTurn) activeTurn.suppressError = true;
@@ -1680,6 +1719,14 @@ function renderRecentStderr(lines: string[] | undefined) {
 
 function isGroupChat(chatType?: string) {
   return chatType === "group";
+}
+
+function feishuSenderIds(senderId: ReceiveMessageEvent["sender"]["sender_id"] | undefined) {
+  return [senderId?.union_id, senderId?.user_id, senderId?.open_id].filter((value): value is string => Boolean(value));
+}
+
+function maskSenderIds(ids: readonly string[]) {
+  return ids.map((id) => (id.length <= 10 ? id : `${id.slice(0, 4)}...${id.slice(-4)}`));
 }
 
 function maskAppId(appId: string) {

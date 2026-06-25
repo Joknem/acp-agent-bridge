@@ -80,6 +80,8 @@ export type RenderStatusOptions = {
   defaultAgent?: string;
   acpTimeoutMs?: number;
   permissionMode?: string;
+  controlPolicy?: string;
+  controlAllowedUserCount?: number;
   messageMergeWindowMs: number;
   ack?: {
     mode: string;
@@ -117,6 +119,7 @@ export type ProviderQueueView = {
 
 const FEISHU_HELP: AgentShortcut[] = [
   { command: "/help", label: "查看帮助" },
+  { command: "/whoami", label: "查看自己的 sender id" },
   { command: "/status", label: "查看当前聊天状态" },
   { command: "/queue", label: "查看当前聊天和 agent 全局队列" },
   { command: "/approve [序号]", label: "批准当前 ACP 权限请求" },
@@ -141,6 +144,7 @@ const FEISHU_HELP: AgentShortcut[] = [
 
 const QQ_HELP: AgentShortcut[] = [
   { command: "/help", label: "查看帮助" },
+  { command: "/whoami", label: "查看自己的 sender id" },
   { command: "/status", label: "查看当前聊天状态" },
   { command: "/queue", label: "查看当前聊天和 agent 全局队列" },
   { command: "/approve [序号]", label: "批准当前 ACP 权限请求" },
@@ -235,6 +239,7 @@ export function renderStatus(options: RenderStatusOptions) {
     options.defaultAgent ? `默认 agent：${code(options.defaultAgent, options.mode)}` : undefined,
     options.acpTimeoutMs !== undefined ? `ACP 超时：${code(`${options.acpTimeoutMs}ms`, options.mode)}` : undefined,
     options.permissionMode ? `权限策略：${code(options.permissionMode, options.mode)}` : undefined,
+    options.controlPolicy ? `控制命令权限：${code(`${options.controlPolicy}，users ${options.controlAllowedUserCount ?? 0}`, options.mode)}` : undefined,
     `消息合并窗口：${code(`${options.messageMergeWindowMs}ms`, options.mode)}`,
     options.ack ? `ACK 模式：${code(options.ack.mode, options.mode)}` : undefined,
     options.ack?.mode === "reaction" && options.ack.processingReaction

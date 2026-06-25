@@ -201,6 +201,10 @@ function makeConfig(
       imageMaxBytes: 10 * 1024 * 1024,
       messageMergeWindowMs: 2000,
     },
+    control: {
+      policy: "open",
+      allowedUsers: [],
+    },
     debug: false,
     showThinkingTool: "force",
     ackMode: "off",

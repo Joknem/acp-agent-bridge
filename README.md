@@ -42,6 +42,8 @@ ACP_ALLOWED_CWD_ROOTS=
 ACP_PROMPT_TIMEOUT_MS=120000
 ACP_PERMISSION_MODE=allow_once
 ACP_PERMISSION_REQUEST_TIMEOUT_MS=60000
+CONTROL_COMMAND_POLICY=open
+CONTROL_COMMAND_ALLOWED_USERS=
 STATE_FILE=.data/state.json
 
 # QQ official bot adapter. Disabled unless explicitly enabled.
@@ -89,6 +91,8 @@ ACP_ALLOWED_CWD_ROOTS=/home/joknem/projects,/home/joknem/acp-create
 - `allow_always`：优先选择长期允许选项，适合非常信任的本地私有环境。
 - `deny`：优先选择拒绝选项；agent 没提供拒绝选项时返回 cancelled。
 - `ask_in_chat`：把权限请求发回当前飞书/QQ 会话，使用 `/approve [序号]` 或 `/deny [序号]` 选择；超过 `ACP_PERMISSION_REQUEST_TIMEOUT_MS` 会自动 cancelled。
+
+`CONTROL_COMMAND_POLICY` 控制谁可以执行敏感控制命令。默认 `open` 保持兼容；设为 `allowlist` 后，只有 `CONTROL_COMMAND_ALLOWED_USERS` 中的 sender id 可以执行 `/agent`、`/cwd`、`/project`、`/bind`、`/unbind`、`/status`、`/queue`、`/doctor`、`/approve`、`/deny`、`/cancel`、`/reset`。飞书可填 `union_id`、`user_id` 或 `open_id`；QQ 可填私聊 `user_openid` 或群聊 `member_openid`。发送 `/whoami` 可以查看当前聊天里自己的 sender id。
 
 Kimi CLI 需要已登录：
 

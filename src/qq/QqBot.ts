@@ -21,6 +21,7 @@ import {
   renderUnknownCommand,
 } from "../core/CommandRenderers.js";
 import { formatCommandForDisplay } from "../core/CommandRedaction.js";
+import { controlDeniedMessage, isControlAllowed } from "../core/ControlAccess.js";
 import { parseDoctorScope, runDoctor, type DoctorChat, type DoctorItem } from "../core/Doctor.js";
 import { IncomingMessagePipeline, type IncomingPipelineState } from "../core/IncomingMessagePipeline.js";
 import { ReplyAdapter } from "../core/ReplyAdapter.js";
@@ -122,25 +123,26 @@ export class QqBot {
   private createCommandRouter() {
     return new CommandRouter<QqCommandContext>()
       .register("help", async (_command, context) => this.handleHelpCommand(context.message))
-      .register("status", async (_command, context) =>
+      .register("whoami", async (_command, context) => this.handleWhoamiCommand(context.message))
+      .register("status", this.restricted(async (_command, context) =>
         this.sendCommandReply(
           context.message,
           this.renderStatus(context.message.conversation.chatId, context.state, context.message.conversation.type),
           "当前配置",
           "status",
         ),
-      )
-      .register("queue", async (_command, context) => this.handleQueueCommand(context.message, context.state))
-      .register(["approve", "allow"], async (command, context) =>
+      ))
+      .register("queue", this.restricted(async (_command, context) => this.handleQueueCommand(context.message, context.state)))
+      .register(["approve", "allow"], this.restricted(async (command, context) =>
         this.handlePermissionDecisionCommand(context.message, context.state, command, "approve"),
-      )
-      .register(["deny", "reject"], async (command, context) =>
+      ))
+      .register(["deny", "reject"], this.restricted(async (command, context) =>
         this.handlePermissionDecisionCommand(context.message, context.state, command, "deny"),
-      )
-      .register("doctor", async (command, context) => this.handleDoctorCommand(context.message, context.state, command))
-      .register("cancel", async (_command, context) => this.handleCancelCommand(context.message, context.state))
-      .register("reset", async (_command, context) => this.handleResetCommand(context.message))
-      .register(["agent", "agents"], async (command, context) => this.handleAgentCommand(context.message, command));
+      ))
+      .register("doctor", this.restricted(async (command, context) => this.handleDoctorCommand(context.message, context.state, command)))
+      .register("cancel", this.restricted(async (_command, context) => this.handleCancelCommand(context.message, context.state)))
+      .register("reset", this.restricted(async (_command, context) => this.handleResetCommand(context.message)))
+      .register(["agent", "agents"], this.restricted(async (command, context) => this.handleAgentCommand(context.message, command)));
   }
 
   private createIncomingPipeline() {
@@ -312,6 +314,7 @@ export class QqBot {
       eventType: message.eventType,
       chatId: message.conversation.chatId,
       messageId: message.messageId,
+      senderIds: maskSenderIds(message.senderIds),
       images: message.imageAttachments.length,
       text: truncate(message.summary, 120),
     });
@@ -351,6 +354,23 @@ export class QqBot {
     }
 
     await this.processMessageBatch([{ message }], state);
+  }
+
+  private restricted(handler: (command: SlashCommand, context: QqCommandContext) => Promise<void> | void) {
+    return async (command: SlashCommand, context: QqCommandContext) => {
+      if (isControlAllowed(this.config.control, { senderIds: context.message.senderIds })) {
+        await handler(command, context);
+        return;
+      }
+
+      this.logger.warn("rejected qq control command", {
+        chatId: context.message.conversation.chatId,
+        command: command.token,
+        senderIds: maskSenderIds(context.message.senderIds),
+        policy: this.config.control.policy,
+      });
+      await this.sendCommandReply(context.message, controlDeniedMessage(this.config.control, { senderIds: context.message.senderIds }), "权限不足");
+    };
   }
 
   private async processMessageBatch(items: QqPromptItem[], state: ChatState) {
@@ -451,6 +471,19 @@ export class QqBot {
 
   private async handleHelpCommand(message: QqIncomingMessage) {
     await this.sendCommandReply(message, this.renderHelp(), "帮助", "help");
+  }
+
+  private async handleWhoamiCommand(message: QqIncomingMessage) {
+    await this.sendCommandReply(
+      message,
+      [
+        "当前 sender ids：",
+        ...(message.senderIds.length ? message.senderIds.map((id) => `- ${id}`) : ["- unknown"]),
+        "",
+        "如果启用 CONTROL_COMMAND_POLICY=allowlist，把其中一个 id 加入 CONTROL_COMMAND_ALLOWED_USERS。",
+      ].join("\n"),
+      "Sender ID",
+    );
   }
 
   private async handleQueueCommand(message: QqIncomingMessage, state: ChatState) {
@@ -568,10 +601,12 @@ export class QqBot {
       defaultAgent: this.config.acp.defaultAgent,
       acpTimeoutMs: this.config.acp.promptTimeoutMs,
       permissionMode: this.config.acp.permissionMode,
+      controlPolicy: this.config.control.policy,
+      controlAllowedUserCount: this.config.control.allowedUsers.length,
       messageMergeWindowMs: this.config.qq.messageMergeWindowMs,
       chatSessionCount: this.stateStore.chatSessionCount(),
       processedMessageCount: this.stateStore.processedMessageCount(),
-      commands: ["/help", "/status", "/queue", "/approve", "/deny", "/doctor", "/agent", "/agent <name>", "/cancel", "/reset"],
+      commands: ["/help", "/whoami", "/status", "/queue", "/approve", "/deny", "/doctor", "/agent", "/agent <name>", "/cancel", "/reset"],
     });
   }
 
@@ -1030,6 +1065,10 @@ function websocketStateLabel(state: number) {
     default:
       return `unknown(${state})`;
   }
+}
+
+function maskSenderIds(ids: readonly string[]) {
+  return ids.map((id) => (id.length <= 10 ? id : `${id.slice(0, 4)}...${id.slice(-4)}`));
 }
 
 function isImmediateCommand(message: QqIncomingMessage) {

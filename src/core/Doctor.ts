@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AppConfig } from "../config.js";
 import type { AcpAgentProvider } from "../acp/types.js";
+import { maskControlUsers } from "./ControlAccess.js";
 import type { TurnFailure } from "./TurnFailure.js";
 
 export type DoctorScope = "all" | "config" | "agent" | "state" | "feishu" | "qq" | "chat";
@@ -147,6 +148,9 @@ async function buildConfigSection(config: AppConfig): Promise<DoctorSection> {
     config.acp.allowedCwdRoots.length
       ? ok("允许 cwd 范围", config.acp.allowedCwdRoots.map((root) => `\`${root}\``).join(", "))
       : warn("允许 cwd 范围", "未限制，聊天命令可以切换到任意存在的绝对目录"),
+    config.control.policy === "open"
+      ? warn("控制命令权限", "open，所有用户都可以执行控制命令")
+      : ok("控制命令权限", `allowlist，${config.control.allowedUsers.length} users：${maskControlUsers(config.control.allowedUsers).join(", ")}`),
     config.acp.promptTimeoutMs < 60_000
       ? warn("ACP 超时", `${config.acp.promptTimeoutMs}ms 偏短，长任务容易超时`)
       : ok("ACP 超时", `${config.acp.promptTimeoutMs}ms`),

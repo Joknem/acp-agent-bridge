@@ -47,6 +47,10 @@ const config = {
     imageMaxBytes: 10 * 1024 * 1024,
     messageMergeWindowMs: 2000,
   },
+  control: {
+    policy: "allowlist",
+    allowedUsers: ["ou_1234567890abcdef"],
+  },
   debug: false,
   showThinkingTool: "force",
   ackMode: "reaction",
@@ -122,6 +126,7 @@ assert(formatted.includes("model=gpt-5.5"));
 assert(formatted.includes("reasoning=high"));
 assert(formatted.includes("权限策略"));
 assert(formatted.includes("权限等待"));
+assert(formatted.includes("控制命令权限"));
 assert(formatted.includes("运行态快照"));
 assert(formatted.includes("重启前运行态"));
 assert(!formatted.includes("sk-live-secretsecret"));

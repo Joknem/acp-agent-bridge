@@ -11,6 +11,7 @@ const imageOnly: QqPromptItem = {
       chatId: "qq:c2c:user-openid-1",
       openid: "user-openid-1",
     },
+    senderIds: ["user-openid-1"],
     text: "",
     imageAttachments: [
       {
@@ -32,6 +33,7 @@ const question: QqPromptItem = {
       chatId: "qq:c2c:user-openid-1",
       openid: "user-openid-1",
     },
+    senderIds: ["user-openid-1"],
     text: "这个按钮为什么错位？",
     imageAttachments: [],
     summary: "这个按钮为什么错位？",
