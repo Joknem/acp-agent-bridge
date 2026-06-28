@@ -16,8 +16,14 @@ import {
   renderAgentList,
   renderAgentUsage,
   renderHelp,
+  renderHistory,
+  renderLastTurn,
   renderQueue,
+  renderRetryAccepted,
+  renderRetryTargetMissing,
+  renderRetryUnavailable,
   renderStatus,
+  renderTrace,
   renderUnknownCommand,
 } from "../core/CommandRenderers.js";
 import { formatCommandForDisplay } from "../core/CommandRedaction.js";
@@ -133,6 +139,10 @@ export class QqBot {
         ),
       ))
       .register("queue", this.restricted(async (_command, context) => this.handleQueueCommand(context.message, context.state)))
+      .register("last", this.restricted(async (_command, context) => this.handleLastCommand(context.message)))
+      .register("history", this.restricted(async (_command, context) => this.handleHistoryCommand(context.message)))
+      .register("trace", this.restricted(async (command, context) => this.handleTraceCommand(context.message, command)))
+      .register("retry", this.restricted(async (command, context) => this.handleRetryCommand(context.message, context.state, command)))
       .register(["approve", "allow"], this.restricted(async (command, context) =>
         this.handlePermissionDecisionCommand(context.message, context.state, command, "approve"),
       ))
@@ -382,14 +392,26 @@ export class QqBot {
     const provider = this.agentManager.currentProvider(chatId);
     const cwd = this.agentManager.currentCwd(chatId);
     const turnId = createTurnId("qq");
+    const startedAt = Date.now();
     const activeTurn: ActiveTurn = {
       turnId,
       provider,
       cwd,
-      startedAt: Date.now(),
+      startedAt,
       text: summary,
     };
     state.activeTurn = activeTurn;
+    this.stateStore.recordTurnStarted({
+      turnId,
+      platform: "qq",
+      chatId,
+      chatType: firstMessage.conversation.type,
+      provider,
+      cwd,
+      text: summary,
+      retryText: retryTextForQqItems(items),
+      startedAt,
+    });
     this.persistChatRuntime(chatId, state, firstMessage.conversation.type);
     this.logger.info("prompting acp agent", {
       turnId,
@@ -409,7 +431,14 @@ export class QqBot {
         permissionHandler: (context) => this.requestChatPermission(replyDestination(firstMessage), state, context),
       });
       await this.sendTurn(firstMessage.conversation, firstMessage.messageId, turn);
+      this.recordSuccessfulTurn(activeTurn, turn);
     } catch (error: unknown) {
+      const failure = createTurnFailure(error, {
+        turnId,
+        provider,
+        cwd,
+        text: summary,
+      });
       if (activeTurn.suppressError) {
         this.logger.info("suppressed cancelled qq turn error", {
           chatId,
@@ -418,14 +447,11 @@ export class QqBot {
           message: errorMessage(error),
           text: truncate(summary, 120),
         });
+        this.recordFailedTurn(activeTurn, failure, "cancelled");
         return;
       }
-      state.lastFailure = createTurnFailure(error, {
-        turnId,
-        provider,
-        cwd,
-        text: summary,
-      });
+      state.lastFailure = failure;
+      this.recordFailedTurn(activeTurn, failure, "error");
       this.logTurnError(chatId, activeTurn, error);
       await this.replies.sendMarkdown(replyDestination(firstMessage), this.renderTurnError(error, activeTurn), "执行失败", "error");
     } finally {
@@ -484,6 +510,74 @@ export class QqBot {
       ].join("\n"),
       "Sender ID",
     );
+  }
+
+  private async handleLastCommand(message: QqIncomingMessage) {
+    await this.sendCommandReply(
+      message,
+      renderLastTurn({ mode: "plain", turn: this.stateStore.getLastTurn(message.conversation.chatId) }),
+      "最近任务",
+    );
+  }
+
+  private async handleHistoryCommand(message: QqIncomingMessage) {
+    await this.sendCommandReply(
+      message,
+      renderHistory({ mode: "plain", turns: this.stateStore.listTurns(message.conversation.chatId, 5) }),
+      "任务历史",
+    );
+  }
+
+  private async handleTraceCommand(message: QqIncomingMessage, command: SlashCommand) {
+    const requestedTurnId = command.args[0];
+    const turn = requestedTurnId
+      ? this.stateStore.getTurnForChat(message.conversation.chatId, requestedTurnId)
+      : this.stateStore.getLastTurn(message.conversation.chatId);
+    await this.sendCommandReply(message, renderTrace({ mode: "plain", turn, requestedTurnId }), "任务追踪");
+  }
+
+  private async handleRetryCommand(message: QqIncomingMessage, state: ChatState, command: SlashCommand) {
+    const requestedTurnId = command.args[0];
+    const turn = requestedTurnId
+      ? this.stateStore.getTurnForChat(message.conversation.chatId, requestedTurnId)
+      : this.stateStore.getLastTurn(message.conversation.chatId);
+    if (!turn) {
+      await this.sendCommandReply(message, renderRetryTargetMissing({ mode: "plain", requestedTurnId }), "无法重试");
+      return;
+    }
+
+    if (!turn.retryText) {
+      await this.sendCommandReply(message, renderRetryUnavailable({ mode: "plain", turn }), "无法重试");
+      return;
+    }
+
+    await this.sendCommandReply(message, renderRetryAccepted({ mode: "plain", turn }), "重试已排队");
+    const retryMessage: QqIncomingMessage = {
+      ...message,
+      text: turn.retryText,
+      imageAttachments: [],
+      summary: turn.retryText,
+    };
+    void this.incomingPipeline
+      .enqueueImmediate(
+        message.conversation.chatId,
+        state,
+        async () => {
+          await this.processMessageBatch([{ message: retryMessage }], state);
+        },
+        {
+          summary: `retry ${turn.turnId}: ${truncate(turn.retryText, 80)}`,
+          owner: message.conversation.chatId,
+        },
+      )
+      .catch((error: unknown) => {
+        this.logger.error("failed to enqueue qq retry", {
+          chatId: message.conversation.chatId,
+          turnId: turn.turnId,
+          message: errorMessage(error),
+        });
+      });
+    this.persistChatRuntime(message.conversation.chatId, state, message.conversation.type);
   }
 
   private async handleQueueCommand(message: QqIncomingMessage, state: ChatState) {
@@ -606,7 +700,23 @@ export class QqBot {
       messageMergeWindowMs: this.config.qq.messageMergeWindowMs,
       chatSessionCount: this.stateStore.chatSessionCount(),
       processedMessageCount: this.stateStore.processedMessageCount(),
-      commands: ["/help", "/whoami", "/status", "/queue", "/approve", "/deny", "/doctor", "/agent", "/agent <name>", "/cancel", "/reset"],
+      commands: [
+        "/help",
+        "/whoami",
+        "/status",
+        "/queue",
+        "/last",
+        "/history",
+        "/trace <turnId>",
+        "/retry [turnId]",
+        "/approve",
+        "/deny",
+        "/doctor",
+        "/agent",
+        "/agent <name>",
+        "/cancel",
+        "/reset",
+      ],
     });
   }
 
@@ -637,6 +747,10 @@ export class QqBot {
         { label: "切换 agent", command: "/agent <name>" },
         { label: "当前配置", command: "/status" },
         { label: "队列状态", command: "/queue" },
+        { label: "最近任务", command: "/last" },
+        { label: "任务历史", command: "/history" },
+        { label: "任务追踪", command: "/trace <turnId>" },
+        { label: "重试任务", command: "/retry [turnId]" },
         { label: "自检", command: "/doctor" },
         { label: "重置会话", command: "/reset" },
       ],
@@ -649,6 +763,32 @@ export class QqBot {
 
   private async sendTurn(conversation: QqConversation, replyToMessageId: string, turn: AgentTurn) {
     await this.replies.sendAgent({ conversation, replyToMessageId }, turn);
+  }
+
+  private recordSuccessfulTurn(activeTurn: ActiveTurn, turn: AgentTurn) {
+    this.stateStore.recordTurnCompleted(activeTurn.turnId, {
+      status: "success",
+      finishedAt: Date.now(),
+      sessionId: turn.sessionId,
+      stopReason: turn.stopReason,
+      answerChars: turn.answerMarkdown.length,
+      thoughtChars: turn.thoughtMarkdown.length,
+      toolChars: turn.toolMarkdown.length,
+    });
+  }
+
+  private recordFailedTurn(activeTurn: ActiveTurn, failure: TurnFailure, status: "error" | "cancelled") {
+    this.stateStore.recordTurnCompleted(activeTurn.turnId, {
+      status,
+      finishedAt: failure.failedAt,
+      sessionId: failure.sessionId,
+      errorMessage: failure.message,
+      timedOut: failure.timedOut,
+      timeoutMs: failure.timeoutMs,
+      cancelAfterTimeout: failure.cancelAfterTimeout,
+      cancelError: failure.cancelError,
+      recentStderr: failure.recentStderr,
+    });
   }
 
   private logTurnError(chatId: string, activeTurn: ActiveTurn, error: unknown) {
@@ -686,6 +826,7 @@ export class QqBot {
         error.details.cancelAfterTimeout ? `timeout cancel：\`${renderCancelStatus(error.details.cancelAfterTimeout)}\`` : undefined,
         error.details.cancelError ? `cancel error：\`${error.details.cancelError}\`` : undefined,
         renderRecentStderr(error.details.recentStderr),
+        renderRecoveryCommands(turnId),
       ]
         .filter((line): line is string => line !== undefined)
         .join("\n");
@@ -697,6 +838,7 @@ export class QqBot {
       `turn：\`${activeTurn.turnId}\``,
       `agent：\`${activeTurn.provider}\``,
       `cwd：\`${activeTurn.cwd}\``,
+      renderRecoveryCommands(activeTurn.turnId),
     ].join("\n");
   }
 
@@ -1048,6 +1190,11 @@ function renderRecentStderr(lines: string[] | undefined) {
   return ["最近 stderr：", ...recent.map((line) => `- \`${truncate(line, 160)}\``)].join("\n");
 }
 
+function renderRecoveryCommands(turnId: string | undefined) {
+  if (!turnId) return undefined;
+  return ["后续操作：", `- 诊断：/trace ${turnId}`, `- 重试纯文本任务：/retry ${turnId}`].join("\n");
+}
+
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -1073,6 +1220,16 @@ function maskSenderIds(ids: readonly string[]) {
 
 function isImmediateCommand(message: QqIncomingMessage) {
   return message.imageAttachments.length === 0 && isSlashCommand(message.text);
+}
+
+function retryTextForQqItems(items: readonly QqPromptItem[]) {
+  const texts: string[] = [];
+  for (const item of items) {
+    if (item.message.imageAttachments.length > 0) return undefined;
+    if (item.message.text.trim()) texts.push(item.message.text.trim());
+  }
+
+  return texts.length ? texts.join("\n\n") : undefined;
 }
 
 function replyDestination(message: QqIncomingMessage): QqReplyDestination {

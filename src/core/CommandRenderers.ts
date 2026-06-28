@@ -1,4 +1,5 @@
 import type { AcpAgentProvider, AgentSessionInfo } from "../acp/types.js";
+import type { PersistedTurnRecord } from "../state/StateStore.js";
 import { truncate } from "../utils/text.js";
 import { formatCommandForDisplay } from "./CommandRedaction.js";
 import type { QueueStatusSnapshot, QueueTaskSnapshot } from "./QueueSnapshot.js";
@@ -112,6 +113,19 @@ export type RenderQueueOptions = {
   providerQueues: ProviderQueueView[];
 };
 
+export type RenderTurnOptions = {
+  mode: CommandRenderMode;
+  now?: number;
+  turn?: PersistedTurnRecord;
+  requestedTurnId?: string;
+};
+
+export type RenderHistoryOptions = {
+  mode: CommandRenderMode;
+  now?: number;
+  turns: PersistedTurnRecord[];
+};
+
 export type ProviderQueueView = {
   provider: string;
   queue: QueueStatusSnapshot;
@@ -122,6 +136,10 @@ const FEISHU_HELP: AgentShortcut[] = [
   { command: "/whoami", label: "查看自己的 sender id" },
   { command: "/status", label: "查看当前聊天状态" },
   { command: "/queue", label: "查看当前聊天和 agent 全局队列" },
+  { command: "/last", label: "查看最近一次 agent 任务" },
+  { command: "/history", label: "查看最近 5 次 agent 任务" },
+  { command: "/trace <turnId>", label: "查看某次任务的诊断轨迹" },
+  { command: "/retry [turnId]", label: "重试最近或指定的纯文本任务" },
   { command: "/approve [序号]", label: "批准当前 ACP 权限请求" },
   { command: "/deny [序号]", label: "拒绝当前 ACP 权限请求" },
   { command: "/doctor", label: "运行配置和运行时自检" },
@@ -147,6 +165,10 @@ const QQ_HELP: AgentShortcut[] = [
   { command: "/whoami", label: "查看自己的 sender id" },
   { command: "/status", label: "查看当前聊天状态" },
   { command: "/queue", label: "查看当前聊天和 agent 全局队列" },
+  { command: "/last", label: "查看最近一次 agent 任务" },
+  { command: "/history", label: "查看最近 5 次 agent 任务" },
+  { command: "/trace <turnId>", label: "查看某次任务的诊断轨迹" },
+  { command: "/retry [turnId]", label: "重试最近或指定的纯文本任务" },
   { command: "/approve [序号]", label: "批准当前 ACP 权限请求" },
   { command: "/deny [序号]", label: "拒绝当前 ACP 权限请求" },
   { command: "/doctor", label: "运行配置和运行时自检" },
@@ -154,6 +176,7 @@ const QQ_HELP: AgentShortcut[] = [
   { command: "/agent", label: "查看可用 agent" },
   { command: "/agent <name>", label: "切换 agent" },
   { command: "/agent switch <name>", label: "切换 agent" },
+  { command: "/cancel", label: "取消当前任务" },
   { command: "/reset", label: "重置当前 agent session" },
 ];
 
@@ -302,6 +325,136 @@ export function renderQueue(options: RenderQueueOptions) {
     .join("\n");
 }
 
+export function renderLastTurn(options: RenderTurnOptions) {
+  if (!options.turn) {
+    return [
+      "这个聊天还没有可追踪的 agent 任务。",
+      "",
+      renderMarkdownAwareLine("发送一条普通消息给 agent 后，可以用 `/last` 查看最近一次结果。", options.mode),
+    ].join("\n");
+  }
+
+  const turn = options.turn;
+  const now = options.now ?? Date.now();
+  return [
+    "最近一次 agent 任务：",
+    `状态：${code(renderTurnStatus(turn.status), options.mode)}`,
+    `Turn ID：${code(turn.turnId, options.mode)}`,
+    `agent：${code(turn.provider, options.mode)}`,
+    `cwd：${code(turn.cwd, options.mode)}`,
+    `开始：${code(`${formatDuration(now - turn.startedAt)} ago`, options.mode)}`,
+    turn.finishedAt
+      ? `耗时：${code(formatDuration(turn.durationMs ?? turn.finishedAt - turn.startedAt), options.mode)}`
+      : `已运行：${code(formatDuration(now - turn.startedAt), options.mode)}`,
+    turn.stopReason ? `结束原因：${code(turn.stopReason, options.mode)}` : undefined,
+    renderTurnSizeLine(turn, options.mode),
+    turn.errorMessage ? `错误：${code(truncate(oneLine(turn.errorMessage), 160), options.mode)}` : undefined,
+    `输入：${code(truncate(oneLine(turn.text), 120), options.mode)}`,
+    "",
+    `查看详情：${code(`/trace ${turn.turnId}`, options.mode)}`,
+    turn.retryText ? `重新执行：${code(`/retry ${turn.turnId}`, options.mode)}` : undefined,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+export function renderHistory(options: RenderHistoryOptions) {
+  if (!options.turns.length) {
+    return [
+      "这个聊天还没有可追踪的 agent 任务。",
+      "",
+      renderMarkdownAwareLine("发送一条普通消息给 agent 后，可以用 `/history` 查看最近任务。", options.mode),
+    ].join("\n");
+  }
+
+  const now = options.now ?? Date.now();
+  return [
+    `最近 ${options.turns.length} 次 agent 任务：`,
+    ...options.turns.map((turn, index) => renderHistoryTurn(turn, index, options.mode, now)),
+    "",
+    renderMarkdownAwareLine("用 `/trace <turnId>` 看详情；纯文本任务可用 `/retry <turnId>` 重试。", options.mode),
+  ].join("\n");
+}
+
+export function renderTrace(options: RenderTurnOptions) {
+  if (!options.turn) {
+    const suffix = options.requestedTurnId ? `：${code(options.requestedTurnId, options.mode)}` : "";
+    return [
+      `没有找到这个聊天里的 turn${suffix}。`,
+      "",
+      renderMarkdownAwareLine("可以先用 `/last` 查看最近一次任务。", options.mode),
+    ].join("\n");
+  }
+
+  const turn = options.turn;
+  const now = options.now ?? Date.now();
+  return [
+    "任务诊断轨迹：",
+    `状态：${code(renderTurnStatus(turn.status), options.mode)}`,
+    `Turn ID：${code(turn.turnId, options.mode)}`,
+    `平台：${code(turn.platform, options.mode)}`,
+    turn.chatType ? `聊天类型：${code(turn.chatType, options.mode)}` : undefined,
+    `agent：${code(turn.provider, options.mode)}`,
+    `cwd：${code(turn.cwd, options.mode)}`,
+    turn.sessionId ? `session：${code(turn.sessionId, options.mode)}` : undefined,
+    `开始：${code(`${formatDuration(now - turn.startedAt)} ago`, options.mode)}`,
+    turn.finishedAt
+      ? `结束：${code(`${formatDuration(now - turn.finishedAt)} ago`, options.mode)}`
+      : undefined,
+    turn.finishedAt
+      ? `耗时：${code(formatDuration(turn.durationMs ?? turn.finishedAt - turn.startedAt), options.mode)}`
+      : `已运行：${code(formatDuration(now - turn.startedAt), options.mode)}`,
+    turn.stopReason ? `结束原因：${code(turn.stopReason, options.mode)}` : undefined,
+    renderTurnSizeLine(turn, options.mode),
+    turn.errorMessage ? `错误：${code(truncate(oneLine(turn.errorMessage), 220), options.mode)}` : undefined,
+    turn.timedOut ? `超时：${code(`${turn.timeoutMs ?? "unknown"}ms`, options.mode)}` : undefined,
+    turn.cancelAfterTimeout ? `超时后取消：${code(turn.cancelAfterTimeout, options.mode)}` : undefined,
+    turn.cancelError ? `取消错误：${code(truncate(oneLine(turn.cancelError), 180), options.mode)}` : undefined,
+    renderTraceStderr(turn, options.mode),
+    "",
+    "输入摘要：",
+    code(truncate(oneLine(turn.text), 500), options.mode),
+    turn.retryText ? "" : undefined,
+    turn.retryText
+      ? `重新执行：${code(`/retry ${turn.turnId}`, options.mode)}`
+      : "重新执行：这次任务包含图片或附件，无法自动复跑原始输入。",
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+export function renderRetryTargetMissing(options: RenderTurnOptions) {
+  const suffix = options.requestedTurnId ? `：${code(options.requestedTurnId, options.mode)}` : "";
+  return [
+    `没有找到可重试的 turn${suffix}。`,
+    "",
+    renderMarkdownAwareLine("可以先用 `/history` 查看最近任务。", options.mode),
+  ].join("\n");
+}
+
+export function renderRetryUnavailable(options: RenderTurnOptions) {
+  if (!options.turn) return renderRetryTargetMissing(options);
+  return [
+    "这个 turn 不能自动重试。",
+    "",
+    `Turn ID：${code(options.turn.turnId, options.mode)}`,
+    "原因：这次任务包含图片或附件，历史里没有保存可复用的原始媒体。",
+    "",
+    "可以重新发送图片和文字，或复制输入摘要手动发起新任务。",
+  ].join("\n");
+}
+
+export function renderRetryAccepted(options: RenderTurnOptions) {
+  if (!options.turn) return renderRetryTargetMissing(options);
+  return [
+    "已加入重试队列。",
+    "",
+    `原 turn：${code(options.turn.turnId, options.mode)}`,
+    `输入：${code(truncate(oneLine(options.turn.retryText ?? options.turn.text), 120), options.mode)}`,
+    renderMarkdownAwareLine("稍后可以用 `/last` 或 `/history` 查看新任务状态。", options.mode),
+  ].join("\n");
+}
+
 function renderStatusFailure(failure: TurnFailure, mode: CommandRenderMode, now: number) {
   const summary = renderFailureSummary(failure, now);
   if (mode === "plain") return summary;
@@ -309,6 +462,44 @@ function renderStatusFailure(failure: TurnFailure, mode: CommandRenderMode, now:
     .split("\n")
     .map((line) => code(line, mode))
     .join("\n");
+}
+
+function renderTurnStatus(status: PersistedTurnRecord["status"]) {
+  switch (status) {
+    case "running":
+      return "处理中";
+    case "success":
+      return "成功";
+    case "error":
+      return "失败";
+    case "cancelled":
+      return "已取消";
+  }
+}
+
+function renderHistoryTurn(turn: PersistedTurnRecord, index: number, mode: CommandRenderMode, now: number) {
+  const duration = turn.finishedAt
+    ? formatDuration(turn.durationMs ?? turn.finishedAt - turn.startedAt)
+    : `${formatDuration(now - turn.startedAt)} running`;
+  const commands = [code(`/trace ${turn.turnId}`, mode), turn.retryText ? code(`/retry ${turn.turnId}`, mode) : undefined]
+    .filter(Boolean)
+    .join(" ");
+  const marker = turn.retryText ? "" : " no-retry";
+  return `${index + 1}. ${code(turn.turnId, mode)} ${renderTurnStatus(turn.status)} ${duration}${marker} ${truncate(oneLine(turn.text), 80)} ${commands}`.trim();
+}
+
+function renderTurnSizeLine(turn: PersistedTurnRecord, mode: CommandRenderMode) {
+  if (turn.answerChars === undefined && turn.thoughtChars === undefined && turn.toolChars === undefined) return undefined;
+  return `输出：${code(`answer ${turn.answerChars ?? 0} chars，thinking ${turn.thoughtChars ?? 0} chars，tool ${turn.toolChars ?? 0} chars`, mode)}`;
+}
+
+function renderTraceStderr(turn: PersistedTurnRecord, mode: CommandRenderMode) {
+  if (!turn.recentStderr.length) return undefined;
+  return ["最近 stderr：", ...turn.recentStderr.map((line) => `- ${code(truncate(oneLine(line), 180), mode)}`)].join("\n");
+}
+
+function oneLine(value: string) {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 function renderSessionStatus(source: string | undefined, persisted: boolean) {

@@ -18,8 +18,14 @@ import {
   renderAgentList,
   renderAgentUsage,
   renderHelp,
+  renderHistory,
+  renderLastTurn,
   renderQueue,
+  renderRetryAccepted,
+  renderRetryTargetMissing,
+  renderRetryUnavailable,
   renderStatus,
+  renderTrace,
   renderUnknownCommand,
 } from "../core/CommandRenderers.js";
 import { formatCommandForDisplay } from "../core/CommandRedaction.js";
@@ -87,6 +93,7 @@ type ProcessTextOptions = {
   ackStates?: AckState[];
   chatType?: string;
   senderIds?: string[];
+  skipAck?: boolean;
 };
 
 type FeishuCommandContext = {
@@ -177,6 +184,10 @@ export class FeishuBot {
       .register("unbind", this.restricted(async (_command, context) => this.handleUnbindCommand(context.chatId, context.chatType)))
       .register("status", this.restricted(async (_command, context) => this.handleStatusCommand(context.chatId, context.chatType)))
       .register("queue", this.restricted(async (_command, context) => this.handleQueueCommand(context.chatId)))
+      .register("last", this.restricted(async (_command, context) => this.handleLastCommand(context.chatId)))
+      .register("history", this.restricted(async (_command, context) => this.handleHistoryCommand(context.chatId)))
+      .register("trace", this.restricted(async (command, context) => this.handleTraceCommand(context.chatId, command)))
+      .register("retry", this.restricted(async (command, context) => this.handleRetryCommand(context.chatId, command, context.chatType)))
       .register(["approve", "allow"], this.restricted(async (command, context) => this.handlePermissionDecisionCommand(context.chatId, command, "approve")))
       .register(["deny", "reject"], this.restricted(async (command, context) => this.handlePermissionDecisionCommand(context.chatId, command, "deny")))
       .register("doctor", this.restricted(async (command, context) => this.handleDoctorCommand(context.chatId, command, context.chatType)))
@@ -371,6 +382,7 @@ export class FeishuBot {
     const provider = this.agentManager.currentProvider(chatId);
     const cwd = this.agentManager.currentCwd(chatId);
     const turnId = createTurnId("feishu");
+    const startedAt = Date.now();
     this.logger.info("prompting acp agent", {
       turnId,
       chatId,
@@ -387,13 +399,24 @@ export class FeishuBot {
       provider,
       cwd,
       text: summary,
-      startedAt: Date.now(),
+      startedAt,
     };
     state.activeTurn = activeTurn;
+    this.stateStore.recordTurnStarted({
+      turnId,
+      platform: "feishu",
+      chatId,
+      chatType: options.chatType,
+      provider,
+      cwd,
+      text: summary,
+      retryText: retryTextForFeishuItems(items),
+      startedAt,
+    });
     this.persistChatRuntime(chatId, state, options.chatType);
 
     try {
-      if (!ackStates.length) {
+      if (!ackStates.length && !options.skipAck) {
         const ackState = await this.acknowledge(chatId, items[0].messageId, provider);
         ackStates = ackState ? [ackState] : [];
       }
@@ -405,9 +428,16 @@ export class FeishuBot {
         permissionHandler: (context) => this.requestChatPermission(chatId, context),
       });
       await this.sendTurn(chatId, turn);
+      this.recordSuccessfulTurn(activeTurn, turn);
       await this.finishAcknowledgements(ackStates, "success");
     } catch (error: unknown) {
       await this.finishAcknowledgements(ackStates, activeTurn.suppressError ? "cancelled" : "error");
+      const failure = createTurnFailure(error, {
+        turnId,
+        provider,
+        cwd,
+        text: summary,
+      });
       if (activeTurn.suppressError) {
         this.logger.info("suppressed cancelled turn error", {
           chatId,
@@ -416,15 +446,12 @@ export class FeishuBot {
           message: errorMessage(error),
           text: truncate(summary, 120),
         });
+        this.recordFailedTurn(activeTurn, failure, "cancelled");
         return;
       }
 
-      state.lastFailure = createTurnFailure(error, {
-        turnId,
-        provider,
-        cwd,
-        text: summary,
-      });
+      state.lastFailure = failure;
+      this.recordFailedTurn(activeTurn, failure, "error");
       throw error;
     } finally {
       this.cancelPendingPermission(chatId);
@@ -817,6 +844,70 @@ export class FeishuBot {
     await this.sendMarkdown(chatId, this.renderQueue(chatId), "队列状态");
   }
 
+  private async handleLastCommand(chatId: string) {
+    await this.sendMarkdown(chatId, renderLastTurn({ mode: "markdown", turn: this.stateStore.getLastTurn(chatId) }), "最近任务");
+  }
+
+  private async handleHistoryCommand(chatId: string) {
+    await this.sendMarkdown(chatId, renderHistory({ mode: "markdown", turns: this.stateStore.listTurns(chatId, 5) }), "任务历史");
+  }
+
+  private async handleTraceCommand(chatId: string, command: SlashCommand) {
+    const requestedTurnId = command.args[0];
+    const turn = requestedTurnId ? this.stateStore.getTurnForChat(chatId, requestedTurnId) : this.stateStore.getLastTurn(chatId);
+    await this.sendMarkdown(chatId, renderTrace({ mode: "markdown", turn, requestedTurnId }), "任务追踪");
+  }
+
+  private async handleRetryCommand(chatId: string, command: SlashCommand, chatType?: string) {
+    const requestedTurnId = command.args[0];
+    const turn = requestedTurnId ? this.stateStore.getTurnForChat(chatId, requestedTurnId) : this.stateStore.getLastTurn(chatId);
+    if (!turn) {
+      await this.sendMarkdown(chatId, renderRetryTargetMissing({ mode: "markdown", requestedTurnId }), "无法重试");
+      return;
+    }
+
+    if (!turn.retryText) {
+      await this.sendMarkdown(chatId, renderRetryUnavailable({ mode: "markdown", turn }), "无法重试");
+      return;
+    }
+
+    await this.sendMarkdown(chatId, renderRetryAccepted({ mode: "markdown", turn }), "重试已排队");
+    const state = this.getChatState(chatId);
+    const retryItem: PendingIncoming = {
+      messageId: `retry:${turn.turnId}`,
+      incoming: {
+        kind: "text",
+        text: turn.retryText,
+        summary: turn.retryText,
+      },
+      chatType,
+    };
+    void this.incomingPipeline
+      .enqueueImmediate(
+        chatId,
+        state,
+        async () => {
+          try {
+            await this.processIncomingBatch(chatId, [retryItem], { chatType, skipAck: true });
+          } catch (error: unknown) {
+            this.logTurnError(chatId, error);
+            const failedTurnId = error instanceof AgentPromptError ? error.details.turnId : this.getChatState(chatId).activeTurn?.turnId;
+            await this.replies.sendMarkdown(chatId, this.renderTurnError(error, failedTurnId), "执行失败", "error").catch((sendError: unknown) => {
+              this.logger.error("failed to send retry error message", errorMessage(sendError));
+            });
+          }
+        },
+        {
+          summary: `retry ${turn.turnId}: ${truncate(turn.retryText, 80)}`,
+          owner: chatId,
+        },
+      )
+      .catch((error: unknown) => {
+        this.logger.error("failed to enqueue retry", { chatId, turnId: turn.turnId, message: errorMessage(error) });
+      });
+    this.persistChatRuntime(chatId, state, chatType);
+  }
+
   private async handlePermissionDecisionCommand(chatId: string, command: SlashCommand, action: PermissionDecisionAction) {
     const state = this.getChatState(chatId);
     const pending = state.pendingPermission;
@@ -948,6 +1039,10 @@ export class FeishuBot {
         "/unbind",
         "/status",
         "/queue",
+        "/last",
+        "/history",
+        "/trace <turnId>",
+        "/retry [turnId]",
         "/approve",
         "/deny",
         "/doctor",
@@ -993,6 +1088,10 @@ export class FeishuBot {
         { label: "项目别名", command: "/project" },
         { label: "当前配置", command: "/status" },
         { label: "队列状态", command: "/queue" },
+        { label: "最近任务", command: "/last" },
+        { label: "任务历史", command: "/history" },
+        { label: "任务追踪", command: "/trace <turnId>" },
+        { label: "重试任务", command: "/retry [turnId]" },
         { label: "自检", command: "/doctor" },
         { label: "发送测试", command: "/ping" },
         { label: "取消任务", command: "/cancel" },
@@ -1010,6 +1109,32 @@ export class FeishuBot {
     }
 
     await this.replies.sendAgent(chatId, turn);
+  }
+
+  private recordSuccessfulTurn(activeTurn: ActiveTurn, turn: AgentTurn) {
+    this.stateStore.recordTurnCompleted(activeTurn.turnId, {
+      status: "success",
+      finishedAt: Date.now(),
+      sessionId: turn.sessionId,
+      stopReason: turn.stopReason,
+      answerChars: turn.answerMarkdown.length,
+      thoughtChars: turn.thoughtMarkdown.length,
+      toolChars: turn.toolMarkdown.length,
+    });
+  }
+
+  private recordFailedTurn(activeTurn: ActiveTurn, failure: TurnFailure, status: "error" | "cancelled") {
+    this.stateStore.recordTurnCompleted(activeTurn.turnId, {
+      status,
+      finishedAt: failure.failedAt,
+      sessionId: failure.sessionId,
+      errorMessage: failure.message,
+      timedOut: failure.timedOut,
+      timeoutMs: failure.timeoutMs,
+      cancelAfterTimeout: failure.cancelAfterTimeout,
+      cancelError: failure.cancelError,
+      recentStderr: failure.recentStderr,
+    });
   }
 
   private async buildAgentPrompt(items: PendingIncoming[]): Promise<AgentPromptContent> {
@@ -1478,6 +1603,7 @@ export class FeishuBot {
         error.details.cancelAfterTimeout ? `timeout cancel：\`${renderCancelStatus(error.details.cancelAfterTimeout)}\`` : undefined,
         error.details.cancelError ? `cancel error：\`${error.details.cancelError}\`` : undefined,
         renderRecentStderr(error.details.recentStderr),
+        renderRecoveryCommands(resolvedTurnId),
         "",
         suggestion,
       ]
@@ -1489,6 +1615,7 @@ export class FeishuBot {
       `错误：\`${errorMessage(error)}\``,
       "",
       turnId ? `turn：\`${turnId}\`` : undefined,
+      renderRecoveryCommands(turnId),
       permissionSuggestion(errorMessage(error)),
     ]
       .filter((line): line is string => line !== undefined)
@@ -1715,6 +1842,21 @@ function renderRecentStderr(lines: string[] | undefined) {
   const recent = lines?.slice(-3) ?? [];
   if (!recent.length) return undefined;
   return ["最近 stderr：", ...recent.map((line) => `- \`${truncate(line, 160)}\``)].join("\n");
+}
+
+function renderRecoveryCommands(turnId: string | undefined) {
+  if (!turnId) return undefined;
+  return ["后续操作：", `- 诊断：\`/trace ${turnId}\``, `- 重试纯文本任务：\`/retry ${turnId}\``].join("\n");
+}
+
+function retryTextForFeishuItems(items: readonly PendingIncoming[]) {
+  const texts: string[] = [];
+  for (const item of items) {
+    if (item.incoming.kind !== "text") return undefined;
+    if (item.incoming.text.trim()) texts.push(item.incoming.text.trim());
+  }
+
+  return texts.length ? texts.join("\n\n") : undefined;
 }
 
 function isGroupChat(chatType?: string) {

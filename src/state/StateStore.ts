@@ -78,6 +78,35 @@ const runtimeSchema = z.object({
   chats: z.record(z.string(), chatRuntimeSchema).default({}),
 });
 
+const turnStatusSchema = z.enum(["running", "success", "error", "cancelled"]);
+
+const turnRecordSchema = z.object({
+  turnId: z.string().min(1),
+  platform: z.enum(["feishu", "qq"]),
+  chatId: z.string().min(1),
+  chatType: z.string().optional(),
+  provider: z.string().min(1),
+  cwd: z.string().min(1),
+  text: z.string(),
+  retryText: z.string().optional(),
+  status: turnStatusSchema,
+  startedAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+  finishedAt: z.number().int().nonnegative().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  sessionId: z.string().optional(),
+  stopReason: z.string().optional(),
+  answerChars: z.number().int().nonnegative().optional(),
+  thoughtChars: z.number().int().nonnegative().optional(),
+  toolChars: z.number().int().nonnegative().optional(),
+  errorMessage: z.string().optional(),
+  timedOut: z.boolean().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  cancelAfterTimeout: z.string().optional(),
+  cancelError: z.string().optional(),
+  recentStderr: z.array(z.string()).default([]),
+});
+
 const stateSchema = z.object({
   version: z.literal(1),
   chats: z.record(z.string(), chatSchema),
@@ -85,12 +114,34 @@ const stateSchema = z.object({
   bindings: z.record(z.string(), bindingSchema).default({}),
   processedMessages: z.record(z.string(), processedMessageSchema).default({}),
   runtime: runtimeSchema.default({ chats: {} }),
+  turnHistory: z.array(turnRecordSchema).default([]),
 });
 
 export type PersistedState = z.infer<typeof stateSchema>;
 export type PersistedChatSession = z.infer<typeof chatSessionSchema>;
 export type PersistedChatRuntime = z.infer<typeof chatRuntimeSchema>;
 export type PersistedChatRuntimeInput = Omit<PersistedChatRuntime, "updatedAt">;
+export type PersistedTurnRecord = z.infer<typeof turnRecordSchema>;
+export type PersistedTurnStatus = PersistedTurnRecord["status"];
+export type PersistedTurnStartInput = Pick<
+  PersistedTurnRecord,
+  "turnId" | "platform" | "chatId" | "chatType" | "provider" | "cwd" | "text" | "retryText" | "startedAt"
+>;
+export type PersistedTurnCompletionInput = {
+  status: Exclude<PersistedTurnStatus, "running">;
+  finishedAt?: number;
+  sessionId?: string;
+  stopReason?: string;
+  answerChars?: number;
+  thoughtChars?: number;
+  toolChars?: number;
+  errorMessage?: string;
+  timedOut?: boolean;
+  timeoutMs?: number;
+  cancelAfterTimeout?: string;
+  cancelError?: string;
+  recentStderr?: string[];
+};
 
 export class StateStore {
   private state: PersistedState = {
@@ -102,6 +153,7 @@ export class StateStore {
     runtime: {
       chats: {},
     },
+    turnHistory: [],
   };
   private writeQueue: Promise<void> = Promise.resolve();
 
@@ -127,6 +179,7 @@ export class StateStore {
         bindings: Object.keys(this.state.bindings).length,
         processedMessages: Object.keys(this.state.processedMessages).length,
         runtimeChats: Object.keys(this.state.runtime.chats).length,
+        turnHistory: this.state.turnHistory.length,
       });
     } catch (error: unknown) {
       if (isNotFound(error)) {
@@ -292,6 +345,67 @@ export class StateStore {
     };
   }
 
+  recordTurnStarted(input: PersistedTurnStartInput) {
+    const now = input.startedAt;
+    const existingIndex = this.state.turnHistory.findIndex((turn) => turn.turnId === input.turnId);
+    if (existingIndex >= 0) this.state.turnHistory.splice(existingIndex, 1);
+
+    this.state.turnHistory.unshift({
+      ...input,
+      status: "running",
+      updatedAt: now,
+      recentStderr: [],
+    });
+    this.pruneTurnHistory();
+    void this.save();
+  }
+
+  recordTurnCompleted(turnId: string, input: PersistedTurnCompletionInput) {
+    const turn = this.state.turnHistory.find((item) => item.turnId === turnId);
+    if (!turn) return false;
+
+    const finishedAt = input.finishedAt ?? Date.now();
+    turn.status = input.status;
+    turn.finishedAt = finishedAt;
+    turn.durationMs = Math.max(0, finishedAt - turn.startedAt);
+    turn.updatedAt = finishedAt;
+    turn.sessionId = input.sessionId;
+    turn.stopReason = input.stopReason;
+    turn.answerChars = input.answerChars;
+    turn.thoughtChars = input.thoughtChars;
+    turn.toolChars = input.toolChars;
+    turn.errorMessage = input.errorMessage;
+    turn.timedOut = input.timedOut;
+    turn.timeoutMs = input.timeoutMs;
+    turn.cancelAfterTimeout = input.cancelAfterTimeout;
+    turn.cancelError = input.cancelError;
+    turn.recentStderr = input.recentStderr?.slice(-5) ?? [];
+    this.pruneTurnHistory();
+    void this.save();
+    return true;
+  }
+
+  getLastTurn(chatId: string) {
+    return this.state.turnHistory.find((turn) => turn.chatId === chatId);
+  }
+
+  getTurn(turnId: string) {
+    return this.state.turnHistory.find((turn) => turn.turnId === turnId);
+  }
+
+  getTurnForChat(chatId: string, turnId: string) {
+    const turn = this.getTurn(turnId);
+    return turn?.chatId === chatId ? turn : undefined;
+  }
+
+  listTurns(chatId: string, limit = 10) {
+    return this.state.turnHistory.filter((turn) => turn.chatId === chatId).slice(0, limit);
+  }
+
+  turnHistoryCount() {
+    return this.state.turnHistory.length;
+  }
+
   async flush() {
     await this.writeQueue;
   }
@@ -328,6 +442,12 @@ export class StateStore {
     }
   }
 
+  private pruneTurnHistory() {
+    this.state.turnHistory = this.state.turnHistory
+      .sort((a, b) => b.startedAt - a.startedAt)
+      .slice(0, TURN_HISTORY_MAX_ENTRIES);
+  }
+
   private ensureChat(chatId: string): PersistedState["chats"][string] {
     const previous = this.state.chats[chatId];
     if (previous) return previous;
@@ -348,6 +468,7 @@ function normalizeProviderName(name: string) {
 
 const PROCESSED_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PROCESSED_MESSAGE_MAX_ENTRIES = 5000;
+const TURN_HISTORY_MAX_ENTRIES = 100;
 
 function isNotFound(error: unknown) {
   return error instanceof Error && "code" in error && error.code === "ENOENT";

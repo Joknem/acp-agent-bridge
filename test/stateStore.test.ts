@@ -145,6 +145,55 @@ assert.equal(store.runtimeStats().pendingBatches, 1);
 assert.equal(store.clearChatRuntime("chat_a"), true);
 assert.equal(store.clearChatRuntime("chat_a"), false);
 
+assert.equal(store.turnHistoryCount(), 0);
+store.recordTurnStarted({
+  turnId: "turn-history-a",
+  platform: "feishu",
+  chatId: "chat_a",
+  chatType: "p2p",
+  provider: "codex",
+  cwd: "/tmp/project-a",
+  text: "first task",
+  retryText: "first task",
+  startedAt: 100_000,
+});
+store.recordTurnCompleted("turn-history-a", {
+  status: "success",
+  finishedAt: 103_000,
+  sessionId: "session-history-a",
+  stopReason: "end_turn",
+  answerChars: 12,
+  thoughtChars: 3,
+  toolChars: 4,
+});
+store.recordTurnStarted({
+  turnId: "turn-history-b",
+  platform: "qq",
+  chatId: "chat_b",
+  provider: "kimi",
+  cwd: "/tmp/project-b",
+  text: "second task",
+  startedAt: 104_000,
+});
+store.recordTurnCompleted("turn-history-b", {
+  status: "error",
+  finishedAt: 106_000,
+  errorMessage: "ACP prompt timeout after 1000ms",
+  timedOut: true,
+  timeoutMs: 1_000,
+  cancelAfterTimeout: "succeeded",
+  recentStderr: ["line 1", "line 2"],
+});
+await store.flush();
+
+assert.equal(store.turnHistoryCount(), 2);
+assert.equal(store.getLastTurn("chat_a")?.turnId, "turn-history-a");
+assert.equal(store.getTurnForChat("chat_a", "turn-history-b"), undefined);
+assert.equal(store.getTurnForChat("chat_b", "turn-history-b")?.status, "error");
+assert.equal(store.getTurn("turn-history-a")?.durationMs, 3_000);
+assert.equal(store.getTurn("turn-history-a")?.retryText, "first task");
+assert.equal(store.listTurns("chat_b").length, 1);
+
 assert.equal(store.deleteBinding("group_a"), true);
 assert.equal(store.deleteBinding("group_a"), false);
 await store.flush();
