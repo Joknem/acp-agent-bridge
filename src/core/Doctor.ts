@@ -210,13 +210,17 @@ async function buildStateSection(config: AppConfig, state: DoctorStateStats): Pr
 }
 
 function buildFeishuSection(config: AppConfig, platformItems: DoctorItem[] | undefined): DoctorSection {
+  const items: DoctorItem[] = [
+    config.feishu.enabled ? ok("启用状态", "已启用") : warn("启用状态", "未启用"),
+    config.feishu.enabled && !config.feishu.appId ? fail("App ID", "未配置") : ok("App ID", config.feishu.appId ? maskValue(config.feishu.appId) : "空"),
+    config.feishu.enabled && !config.feishu.appSecret ? fail("App Secret", "未配置") : ok("App Secret", config.feishu.appSecret ? "已配置" : "空"),
+    ok("Domain", config.feishu.domain),
+    ...(config.feishu.enabled ? platformItems ?? [warn("凭证实时检查", "当前平台没有提供实时检查结果")] : []),
+  ];
+
   return {
     title: "飞书",
-    items: [
-      ok("App ID", maskValue(config.feishu.appId)),
-      ok("Domain", config.feishu.domain),
-      ...(platformItems ?? [warn("凭证实时检查", "当前平台没有提供实时检查结果")]),
-    ],
+    items,
   };
 }
 

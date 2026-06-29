@@ -170,6 +170,7 @@ function makeConfig(
 ): AppConfig {
   return {
     feishu: {
+      enabled: false,
       appId: "cli_fake",
       appSecret: "secret",
       domain: "feishu",

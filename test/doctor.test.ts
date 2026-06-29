@@ -11,6 +11,7 @@ await fs.writeFile(stateFile, "{}\n", "utf8");
 
 const config = {
   feishu: {
+    enabled: true,
     appId: "cli_1234567890",
     appSecret: "secret",
     domain: "feishu",

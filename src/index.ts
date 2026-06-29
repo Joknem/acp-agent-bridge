@@ -15,8 +15,13 @@ async function main() {
 
   await agentManager.startDefault();
 
-  const bot = new FeishuBot(config, agentManager, stateStore, logger);
-  bot.start();
+  if (config.feishu.enabled) {
+    const bot = new FeishuBot(config, agentManager, stateStore, logger);
+    bot.start();
+  } else {
+    logger.info("feishu bot disabled");
+  }
+
   const qqBot = new QqBot(config, agentManager, stateStore, logger);
   await qqBot.start();
 

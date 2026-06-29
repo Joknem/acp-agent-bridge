@@ -14,6 +14,7 @@ cp .env.example .env
 填写 `.env`：
 
 ```env
+FEISHU_BOT_ENABLED=true
 FEISHU_APP_ID=cli_xxxxxxxxxxxxxxxx
 FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ACP_DEFAULT_CWD=/Users/yourname/projects
@@ -61,6 +62,7 @@ QQ_BOT_MESSAGE_MERGE_WINDOW_MS=2000
 ```
 
 程序会优先读取项目根目录的 `.env`，并覆盖 shell 中已有的同名环境变量，避免误连到旧的飞书应用。
+如果只使用 QQ，把 `FEISHU_BOT_ENABLED=false`，此时不需要填写真实的 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`，服务也不会启动飞书长连接或执行飞书凭证检查。
 
 如果 `npm run dev` 报 `spawn kimi ENOENT`，说明当前进程找不到 `kimi` 可执行文件。先运行：
 
@@ -111,6 +113,7 @@ kimi login
 QQ adapter 默认关闭；配置 QQ 官方机器人凭证后可与飞书并行启动：
 
 ```env
+FEISHU_BOT_ENABLED=false
 QQ_BOT_ENABLED=true
 QQ_BOT_APP_ID=123456789
 QQ_BOT_APP_SECRET=xxxxxxxxxxxxxxxx
@@ -118,6 +121,15 @@ QQ_BOT_SANDBOX=true
 ```
 
 QQ 官方现在默认发放的是 `AppID` 和 `AppSecret`。程序会用它们调用 `https://bots.qq.com/app/getAppAccessToken` 换取 Access Token，并在 `/gateway`、WebSocket Identify 和发消息时使用 `QQBot <access_token>` 鉴权。`QQ_BOT_SANDBOX=true` 会使用 `https://sandbox.api.sgroup.qq.com`，否则使用正式环境 `https://api.sgroup.qq.com`。
+
+Windows 下可以直接使用盘符路径，例如：
+
+```env
+ACP_DEFAULT_CWD=D:/ACP_Code
+ACP_ALLOWED_CWD_ROOTS=D:/ACP_Code
+AGENT_CODEX_COMMAND=D:/Software/Nodejs/node.exe
+AGENT_CODEX_ARGS=D:/Software/Nodejs/node_global/node_modules/@agentclientprotocol/codex-acp/dist/index.js
+```
 
 旧版 `QQ_BOT_TOKEN` 仍保留为兼容字段：如果没有配置 `QQ_BOT_APP_SECRET`，程序会回退到旧的 `Bot {appid}.{token}` 鉴权格式。新机器人建议使用 `QQ_BOT_APP_SECRET`。
 

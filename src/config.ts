@@ -11,8 +11,13 @@ dotenv.config({
 });
 
 const envSchema = z.object({
-  FEISHU_APP_ID: z.string().min(1),
-  FEISHU_APP_SECRET: z.string().min(1),
+  FEISHU_BOT_ENABLED: z
+    .string()
+    .optional()
+    .default("true")
+    .transform((value) => value.toLowerCase() === "true"),
+  FEISHU_APP_ID: z.string().optional().default(""),
+  FEISHU_APP_SECRET: z.string().optional().default(""),
   ACP_DEFAULT_CWD: z.string().min(1).default(process.cwd()),
   KIMI_PATH: z.string().min(1).default("kimi"),
   AGENT_DEFAULT: z.string().min(1).default("kimi"),
@@ -92,9 +97,13 @@ export function loadConfig() {
   ) {
     throw new Error("QQ_BOT_ENABLED=true requires QQ_BOT_APP_ID and QQ_BOT_APP_SECRET (or legacy QQ_BOT_TOKEN).");
   }
+  if (parsed.data.FEISHU_BOT_ENABLED && (!parsed.data.FEISHU_APP_ID || !parsed.data.FEISHU_APP_SECRET)) {
+    throw new Error("FEISHU_BOT_ENABLED=true requires FEISHU_APP_ID and FEISHU_APP_SECRET.");
+  }
 
   return {
     feishu: {
+      enabled: parsed.data.FEISHU_BOT_ENABLED,
       appId: parsed.data.FEISHU_APP_ID,
       appSecret: parsed.data.FEISHU_APP_SECRET,
       domain: parsed.data.FEISHU_DOMAIN,
